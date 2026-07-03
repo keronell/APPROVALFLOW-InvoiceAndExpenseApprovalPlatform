@@ -1,0 +1,44 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# --- Node / UI ---
+node_modules/
+ui/dist/
+*.tsbuildinfo
+
+# --- Environment & secrets ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.json
+
+# --- Docker / local data ---
+docker-compose.override.yml
+.ollama/
+*.local.yml
+
+# --- IDE / OS ---
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Logs / temp ---
+*.log
+tmp/
+.scratch/
