@@ -1,0 +1,17 @@
+[project]
+name = "approvalflow-shared"
+version = "0.1.0"
+description = "Shared contracts and cross-cutting concerns (logging, correlation) for ApprovalFlow services"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.7",
+    "structlog>=24.1",
+    "fastapi>=0.111",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["approvalflow_shared*"]

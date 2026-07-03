@@ -1,0 +1,6 @@
+# Development / CI dependencies. Services pin their own runtime deps.
+-e services/shared
+
+pytest>=8.2
+httpx>=0.27
+ruff>=0.5
