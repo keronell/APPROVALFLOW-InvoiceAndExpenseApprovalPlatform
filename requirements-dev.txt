@@ -1,5 +1,6 @@
 # Development / CI dependencies. Services pin their own runtime deps.
 -e services/shared
+-e services/decision
 
 pytest>=8.2
 httpx>=0.27
