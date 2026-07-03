@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.7",
     "approvalflow-shared",
+    "agent-framework>=1.10",
 ]
 
 [build-system]
