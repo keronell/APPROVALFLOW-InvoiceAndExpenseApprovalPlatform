@@ -1,0 +1,26 @@
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: approvalflow-pubsub
+spec:
+  type: pubsub.rabbitmq
+  version: v1
+  metadata:
+    # Resolved via the env-var secret store (M5): the sidecar containers get
+    # RABBITMQ_CONNECTION_STRING from docker compose / .env — never committed.
+    - name: connectionString
+      secretKeyRef:
+        name: RABBITMQ_CONNECTION_STRING
+        key: RABBITMQ_CONNECTION_STRING
+    - name: durable
+      value: "true"
+    - name: deletedWhenUnused
+      value: "false"
+    - name: autoAck
+      value: "false"
+    - name: deliveryMode
+      value: "2"
+    - name: requeueInFailure
+      value: "true"
+auth:
+  secretStore: secretstore
