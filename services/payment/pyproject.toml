@@ -1,0 +1,20 @@
+[project]
+name = "approvalflow-payment"
+version = "0.1.0"
+description = "Payment saga: reserve -> pay -> confirm with compensation; no overspend, no double pay (M9/M10)"
+requires-python = ">=3.12"
+dependencies = [
+    "approvalflow-shared",
+    "dapr>=1.15",
+    "dapr-ext-workflow>=1.15",
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["approvalflow_payment*"]

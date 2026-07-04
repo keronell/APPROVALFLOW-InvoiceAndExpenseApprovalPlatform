@@ -49,6 +49,30 @@ class DaprIO:
         resp.raise_for_status()
         return resp.json()
 
+    async def get_state_and_etag(self, store: str, key: str) -> tuple[object | None, str | None]:
+        """Read a value together with its ETag for optimistic concurrency (M9)."""
+        resp = await self._client.get(f"{dapr_base_url()}/state/{store}/{key}")
+        if resp.status_code == 204 or not resp.content:
+            return None, None
+        resp.raise_for_status()
+        return resp.json(), resp.headers.get("ETag")
+
+    async def try_save_state(
+        self, store: str, key: str, value: object, *, etag: str | None = None
+    ) -> bool:
+        """Conditional write. With an ETag it uses first-write concurrency and
+        returns False on a conflict (409) so the caller can retry — this is what
+        prevents two concurrent approvals from overspending a budget."""
+        entry: dict = {"key": key, "value": value}
+        if etag is not None:
+            entry["etag"] = etag
+            entry["options"] = {"concurrency": "first-write", "consistency": "strong"}
+        resp = await self._client.post(f"{dapr_base_url()}/state/{store}", json=[entry])
+        if resp.status_code in (409, 412):  # etag conflict
+            return False
+        resp.raise_for_status()
+        return True
+
     async def invoke(
         self,
         app_id: str,
