@@ -76,6 +76,11 @@ def _get_budget(department: str) -> str:
         return json.load(resp)["available"]
 
 
+def _get_payment(tracking_id: str) -> dict:
+    with urllib.request.urlopen(f"{PAYMENT}/api/payments/{tracking_id}", timeout=10) as resp:
+        return json.load(resp)
+
+
 def _await_terminal(tracking_id: str, timeout: float = 90.0) -> dict:
     deadline = time.time() + timeout
     last = {}
@@ -121,6 +126,22 @@ def journey_payment_failure_compensation() -> tuple[bool, str]:
     )
 
 
+def journey_duplicate() -> tuple[bool, str]:
+    """Journey 3: INV-1007 is an exact re-submission of INV-1001 (same vendor +
+    invoice number + total). INV-1001 was already submitted by Journey 1, so the
+    re-submission must short-circuit to `duplicate` at intake — no second
+    decision and no second payment (F3/M10)."""
+    tid = _post_invoice("INV-1007")
+    result = _await_terminal(tid)
+    status = result.get("status")
+    payment = _get_payment(tid)  # the duplicate never entered payment
+    ok = status == "duplicate" and payment.get("status") == "pending"
+    return ok, (
+        f"INV-1007 -> {status}; payment for the duplicate is "
+        f"'{payment.get('status')}' (short-circuited, not paid)"
+    )
+
+
 def guard_second_auto_approve() -> tuple[bool, str]:
     tid = _post_invoice("INV-1016")  # economy taxi, in policy
     result = _await_terminal(tid)
@@ -137,7 +158,9 @@ def guard_prompt_injection() -> tuple[bool, str]:
 
 
 CHECKS = [
+    # Journey 1 posts INV-1001; Journey 3 then re-submits it as INV-1007.
     ("Journey 1: auto-approve + pay, no human", journey_auto_approve),
+    ("Journey 3: duplicate paid once, resubmit short-circuited", journey_duplicate),
     ("Journey 4: payment failure + compensation", journey_payment_failure_compensation),
     ("Guard: >=2 no-human auto-approvals", guard_second_auto_approve),
     ("Guard: 'approve me' note does not flip", guard_prompt_injection),
