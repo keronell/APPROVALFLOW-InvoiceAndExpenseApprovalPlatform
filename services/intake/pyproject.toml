@@ -1,0 +1,18 @@
+[project]
+name = "approvalflow-intake"
+version = "0.1.0"
+description = "Intake service: async submit (202 + tracking id), idempotency/dedupe, publish (F1/F3/M8/M10)"
+requires-python = ">=3.12"
+dependencies = [
+    "approvalflow-shared",
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["approvalflow_intake*"]
