@@ -52,6 +52,18 @@ def test_duplicate_resubmission_is_flagged_and_not_republished(client, publisher
     assert publisher.topics() == [Topics.ITEM_SUBMITTED]
 
 
+def test_duplicate_status_endpoint_explains_the_outcome(client, fixtures_by_id):
+    """Journey 3 at the intake surface: the submitter can see a plain-language
+    duplicate reason and which item it duplicated (F2/F3)."""
+    original = client.post("/api/invoices", json=fixtures_by_id["INV-1001"]).json()["trackingId"]
+    dup_tid = client.post("/api/invoices", json=fixtures_by_id["INV-1007"]).json()["trackingId"]
+
+    record = client.get(f"/api/invoices/{dup_tid}").json()
+    assert record["status"] == ItemStatus.DUPLICATE
+    assert record["duplicate_of"] == original
+    assert "not be paid twice" in record["reason"].lower()
+
+
 def test_submitter_supplied_correlation_id_becomes_tracking_id(client, fixtures_by_id):
     resp = client.post(
         "/api/invoices",
