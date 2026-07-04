@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from decimal import Decimal
 from enum import IntEnum, StrEnum
 
-from approvalflow_shared.contracts import ExpenseCategory, Route
+from approvalflow_shared.contracts import ExpenseCategory, ItemStatus, Route
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -112,3 +113,28 @@ class RouteDecision(BaseModel):
     reason: str
     cited_rules: list[str] = Field(default_factory=list)
     confidence: float | None = None
+
+
+# The submitter-visible status each route maps to when the decision is made.
+ROUTE_TO_STATUS: dict[Route, ItemStatus] = {
+    Route.AUTO_APPROVE: ItemStatus.AUTO_APPROVED,
+    Route.HUMAN_REVIEW: ItemStatus.PENDING_APPROVAL,
+    Route.REJECT: ItemStatus.REJECTED,
+    Route.DUPLICATE: ItemStatus.DUPLICATE,
+}
+
+
+class DecisionRecord(BaseModel):
+    """The full, auditable decision for one item (F9)."""
+
+    tracking_id: str
+    correlation_id: str
+    invoice_id: str
+    route: Route
+    status: ItemStatus
+    reason: str
+    cited_rules: list[str] = Field(default_factory=list)
+    usd_amount: str
+    assessment: AgentAssessment
+    decided_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.UTC))
+

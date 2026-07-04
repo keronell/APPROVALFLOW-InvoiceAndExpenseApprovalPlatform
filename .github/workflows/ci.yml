@@ -26,3 +26,15 @@ jobs:
 
       - name: Unit tests (pytest)
         run: pytest
+
+  verify:
+    # End-to-end verification (D5): the four journeys + anti-cheese guards,
+    # against the whole stack, using the deterministic stub model.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify (docker compose + journeys)
+        env:
+          LLM_PROVIDER: stub
+        run: python tools/verify.py --down

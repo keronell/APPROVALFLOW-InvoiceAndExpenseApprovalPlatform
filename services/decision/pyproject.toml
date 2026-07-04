@@ -7,6 +7,11 @@ dependencies = [
     "pydantic>=2.7",
     "approvalflow-shared",
     "agent-framework>=1.10",
+    "dapr>=1.15",
+    "dapr-ext-workflow>=1.15",
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
 ]
 
 [build-system]
