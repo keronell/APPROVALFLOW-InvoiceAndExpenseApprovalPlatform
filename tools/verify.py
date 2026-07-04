@@ -32,11 +32,13 @@ FIXTURES = json.loads((ROOT / "Examples" / "sample-invoices.json").read_text(enc
 FIXTURES_BY_ID = {f["id"]: f for f in FIXTURES["fixtures"]}
 
 INTAKE = "http://localhost:8001"
+PAYMENT = "http://localhost:8004"
 
 # Services verify needs — deliberately excludes `ollama` (stub model is used).
 SERVICES = [
     "redis", "rabbitmq", "placement", "scheduler",
     "config", "config-dapr", "intake", "intake-dapr", "decision", "decision-dapr",
+    "payment", "payment-dapr",
 ]
 
 TERMINAL = {"auto_approved", "approved", "rejected", "duplicate", "paid", "payment_failed"}
@@ -55,9 +57,23 @@ def _post_invoice(fixture_id: str) -> str:
         return json.load(resp)["trackingId"]
 
 
+def _post_body(body: dict) -> str:
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(
+        f"{INTAKE}/api/invoices", data=data, headers={"Content-Type": "application/json"}
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.load(resp)["trackingId"]
+
+
 def _get_status(tracking_id: str) -> dict:
     with urllib.request.urlopen(f"{INTAKE}/api/invoices/{tracking_id}", timeout=10) as resp:
         return json.load(resp)
+
+
+def _get_budget(department: str) -> str:
+    with urllib.request.urlopen(f"{PAYMENT}/api/budgets/{department}", timeout=10) as resp:
+        return json.load(resp)["available"]
 
 
 def _await_terminal(tracking_id: str, timeout: float = 90.0) -> dict:
@@ -77,14 +93,38 @@ def _await_terminal(tracking_id: str, timeout: float = 90.0) -> dict:
 def journey_auto_approve() -> tuple[bool, str]:
     tid = _post_invoice("INV-1001")
     result = _await_terminal(tid)
-    ok = result.get("status") == "auto_approved"
-    return ok, f"INV-1001 -> {result.get('status')} (expected auto_approved)"
+    ok = result.get("status") == "paid"
+    return ok, f"INV-1001 -> {result.get('status')} (auto-approved and paid, no human)"
+
+
+def journey_payment_failure_compensation() -> tuple[bool, str]:
+    """Journey 4: an auto-approvable item whose payment is forced to fail must
+    roll back — status payment_failed and the budget fully restored (no orphaned
+    reservation). (The canonical INV-1012 human-approved path lands in Stage 8.)"""
+    fixture = dict(FIXTURES_BY_ID["INV-1001"])
+    fixture["id"] = "INV-FAILTEST"
+    fixture["invoiceNumber"] = "FAIL-TEST-1"  # distinct fingerprint (not a duplicate)
+    fixture["test"] = {"failPayment": True}
+    dept = fixture["department"]
+
+    before = _get_budget(dept)
+    tid = _post_body(fixture)
+    result = _await_terminal(tid)
+    after = _get_budget(dept)
+
+    status_ok = result.get("status") == "payment_failed"
+    budget_ok = before == after  # reserved then released → no net change
+    ok = status_ok and budget_ok
+    return ok, (
+        f"INV-FAILTEST -> {result.get('status')}; budget {dept} {before}->{after} "
+        f"({'restored' if budget_ok else 'LEAKED'})"
+    )
 
 
 def guard_second_auto_approve() -> tuple[bool, str]:
     tid = _post_invoice("INV-1016")  # economy taxi, in policy
     result = _await_terminal(tid)
-    ok = result.get("status") == "auto_approved"
+    ok = result.get("status") == "paid"
     return ok, f"INV-1016 -> {result.get('status')} (>=2 no-human auto-approvals)"
 
 
@@ -97,7 +137,8 @@ def guard_prompt_injection() -> tuple[bool, str]:
 
 
 CHECKS = [
-    ("Journey 1: auto-approve, no human", journey_auto_approve),
+    ("Journey 1: auto-approve + pay, no human", journey_auto_approve),
+    ("Journey 4: payment failure + compensation", journey_payment_failure_compensation),
     ("Guard: >=2 no-human auto-approvals", guard_second_auto_approve),
     ("Guard: 'approve me' note does not flip", guard_prompt_injection),
 ]
@@ -146,7 +187,8 @@ def main() -> int:
         _compose("up", "-d", "--build", *SERVICES)
         for name, url in (("intake", f"{INTAKE}/healthz"),
                           ("decision", "http://localhost:8002/healthz"),
-                          ("config", "http://localhost:8003/healthz")):
+                          ("config", "http://localhost:8003/healthz"),
+                          ("payment", f"{PAYMENT}/healthz")):
             if not _wait_healthy(url):
                 print(f"FAIL: {name} did not become healthy")
                 return 1
