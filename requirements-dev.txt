@@ -2,6 +2,7 @@
 -e services/shared
 -e services/decision
 -e services/intake
+-e services/config
 
 pytest>=8.2
 anyio>=4.3

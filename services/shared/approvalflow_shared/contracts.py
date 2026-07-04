@@ -138,3 +138,25 @@ class StatusChanged(_CamelModel):
     correlation_id: str
     status: ItemStatus
     reason: str
+
+
+class DecisionMade(_CamelModel):
+    """Event published by the decision service when a route is decided."""
+
+    tracking_id: str
+    correlation_id: str
+    invoice_id: str
+    route: str
+    status: ItemStatus
+    reason: str
+    cited_rules: list[str] = Field(default_factory=list)
+    usd_amount: str
+
+
+class PaymentRequested(_CamelModel):
+    """Event asking the payment service to pay an approved item."""
+
+    tracking_id: str
+    correlation_id: str
+    invoice: InvoiceSubmission
+    usd_amount: str

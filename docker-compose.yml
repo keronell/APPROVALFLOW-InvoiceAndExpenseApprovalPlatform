@@ -1,8 +1,30 @@
 # ApprovalFlow — the whole system comes up with `docker compose up` (M4).
-# Stage 1 (scaffold): infrastructure only. Application services + Dapr sidecars
-# land in their own stages/PRs.
+#
+# Each application service runs alongside its own Dapr sidecar (daprd) that
+# shares the service's network namespace (`network_mode: service:<svc>`), so the
+# app reaches its sidecar at localhost:3500 and the sidecar reaches the app at
+# localhost:8000. External ports are published on the app container.
+#
+# LLM_PROVIDER defaults to `ollama` (real local model). CI and tools/verify.py
+# bring the stack up with LLM_PROVIDER=stub for a hermetic, deterministic run.
 
 name: approvalflow
+
+x-dapr-sidecar: &dapr-sidecar
+  image: daprio/daprd:1.18.0
+  environment:
+    RABBITMQ_CONNECTION_STRING: "amqp://${RABBITMQ_USER:-approvalflow}:${RABBITMQ_PASSWORD:-approvalflow-dev}@rabbitmq:5672"
+  volumes:
+    - ./dapr/components:/components
+  depends_on:
+    redis:
+      condition: service_healthy
+    rabbitmq:
+      condition: service_healthy
+    placement:
+      condition: service_started
+    scheduler:
+      condition: service_started
 
 services:
   # ---------------------------------------------------------------- messaging
@@ -36,16 +58,12 @@ services:
   scheduler:
     image: daprio/scheduler:1.18.0
     command: ["./scheduler", "--port", "50007", "--etcd-data-dir", "/data"]
-    # The image runs as a non-root user, but the named volume is created
-    # root-owned — the embedded etcd needs to own its data dir.
     user: "0"
     volumes:
       - scheduler-data:/data
 
   # ----------------------------------------------------------------- local llm
-  # Default live model (Ollama + Qwen). Point LLM_BASE_URL at
-  # http://host.docker.internal:11434/v1 in .env to use a host-installed Ollama
-  # instead. CI and tools/verify.py use LLM_PROVIDER=stub and never touch this.
+  # Default live model. Not started by tools/verify.py (which uses the stub).
   ollama:
     image: ollama/ollama:latest
     entrypoint:
@@ -54,6 +72,107 @@ services:
       - "ollama serve & sleep 3 && ollama pull ${OLLAMA_MODEL:-qwen2.5:3b}; wait"
     volumes:
       - ollama-data:/root/.ollama
+
+  # -------------------------------------------------------------- config svc
+  config:
+    build:
+      context: .
+      dockerfile: services/config/Dockerfile
+    environment:
+      DAPR_HTTP_PORT: "3500"
+    ports:
+      - "8003:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      redis:
+        condition: service_healthy
+  config-dapr:
+    <<: *dapr-sidecar
+    command:
+      ["./daprd", "--app-id", "config", "--app-port", "8000",
+       "--dapr-http-port", "3500", "--dapr-grpc-port", "50001",
+       "--resources-path", "/components",
+       "--placement-host-address", "placement:50006",
+       "--scheduler-host-address", "scheduler:50007"]
+    network_mode: "service:config"
+    depends_on:
+      config:
+        condition: service_started
+
+  # -------------------------------------------------------------- intake svc
+  intake:
+    build:
+      context: .
+      dockerfile: services/intake/Dockerfile
+    environment:
+      DAPR_HTTP_PORT: "3500"
+      STORE_BACKEND: "dapr"
+      PUBLISHER_BACKEND: "dapr"
+    ports:
+      - "8001:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+  intake-dapr:
+    <<: *dapr-sidecar
+    command:
+      ["./daprd", "--app-id", "intake", "--app-port", "8000",
+       "--dapr-http-port", "3500", "--dapr-grpc-port", "50001",
+       "--resources-path", "/components",
+       "--placement-host-address", "placement:50006",
+       "--scheduler-host-address", "scheduler:50007"]
+    network_mode: "service:intake"
+    depends_on:
+      intake:
+        condition: service_started
+
+  # ------------------------------------------------------------- decision svc
+  decision:
+    build:
+      context: .
+      dockerfile: services/decision/Dockerfile
+    environment:
+      DAPR_HTTP_PORT: "3500"
+      DAPR_GRPC_PORT: "50001"
+      LLM_PROVIDER: "${LLM_PROVIDER:-ollama}"
+      LLM_MODEL: "${LLM_MODEL:-qwen2.5:3b}"
+      LLM_BASE_URL: "${LLM_BASE_URL:-http://ollama:11434/v1}"
+      LLM_API_KEY: "${LLM_API_KEY:-ollama}"
+    ports:
+      - "8002:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+  decision-dapr:
+    <<: *dapr-sidecar
+    command:
+      ["./daprd", "--app-id", "decision", "--app-port", "8000",
+       "--dapr-http-port", "3500", "--dapr-grpc-port", "50001",
+       "--resources-path", "/components",
+       "--placement-host-address", "placement:50006",
+       "--scheduler-host-address", "scheduler:50007"]
+    network_mode: "service:decision"
+    depends_on:
+      decision:
+        condition: service_started
 
 volumes:
   scheduler-data:
