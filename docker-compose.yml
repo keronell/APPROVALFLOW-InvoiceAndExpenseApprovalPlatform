@@ -1,0 +1,60 @@
+# ApprovalFlow — the whole system comes up with `docker compose up` (M4).
+# Stage 1 (scaffold): infrastructure only. Application services + Dapr sidecars
+# land in their own stages/PRs.
+
+name: approvalflow
+
+services:
+  # ---------------------------------------------------------------- messaging
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-approvalflow}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-approvalflow-dev}
+    ports:
+      - "15672:15672" # management UI (demo/debugging)
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ------------------------------------------------------------------ storage
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # -------------------------------------------------------------- dapr system
+  placement:
+    image: daprio/placement:1.18.0
+    command: ["./placement", "--port", "50006"]
+
+  scheduler:
+    image: daprio/scheduler:1.18.0
+    command: ["./scheduler", "--port", "50007", "--etcd-data-dir", "/data"]
+    # The image runs as a non-root user, but the named volume is created
+    # root-owned — the embedded etcd needs to own its data dir.
+    user: "0"
+    volumes:
+      - scheduler-data:/data
+
+  # ----------------------------------------------------------------- local llm
+  # Default live model (Ollama + Qwen). Point LLM_BASE_URL at
+  # http://host.docker.internal:11434/v1 in .env to use a host-installed Ollama
+  # instead. CI and tools/verify.py use LLM_PROVIDER=stub and never touch this.
+  ollama:
+    image: ollama/ollama:latest
+    entrypoint:
+      - /bin/sh
+      - -c
+      - "ollama serve & sleep 3 && ollama pull ${OLLAMA_MODEL:-qwen2.5:3b}; wait"
+    volumes:
+      - ollama-data:/root/.ollama
+
+volumes:
+  scheduler-data:
+  ollama-data:

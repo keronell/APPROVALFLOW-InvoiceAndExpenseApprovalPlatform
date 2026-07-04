@@ -1,0 +1,18 @@
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: statestore
+spec:
+  type: state.redis
+  version: v1
+  metadata:
+    - name: redisHost
+      value: "redis:6379"
+    - name: redisPassword
+      value: ""
+    # Required by Dapr Workflow (built on actors) — one actor state store per app.
+    - name: actorStateStore
+      value: "true"
+    # Each service prefixes its keys with its own app id → no cross-service reads.
+    - name: keyPrefix
+      value: "appid"
