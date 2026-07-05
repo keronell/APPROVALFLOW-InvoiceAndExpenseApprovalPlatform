@@ -10,7 +10,9 @@ via one correlation id.
 Capstone for the **Microservice Architecture** and **AI Engineering** courses.
 
 > 🚧 Work in progress — built in staged pull requests. See the PR history for the
-> requirement-by-requirement trail.
+> requirement-by-requirement trail. Current: journeys 1 (auto-approve→paid),
+> 3 (duplicate) and 4 (payment failure + compensation) are green end-to-end via
+> `tools/verify.py`; journey 2 (escalate-and-resume) lands with the HITL stage.
 
 ## Tech stack
 

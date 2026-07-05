@@ -88,13 +88,16 @@ and CI is green. PR descriptions map to requirement IDs.
 3. **`feat/intake`** — 202/dedupe/publish/status; unit+integration. ✅ done
 4. **`feat/agent`** — MAF agent, stub client, provider swap, fail-fast;
    agent→router reproduces fixtures. ✅ done
-5. **`feat/decision-workflow`** — Dapr Workflow + config service + notification;
-   **J1 green in verify.py**. ⏳ next
-6. **`feat/payment-saga`** — reserve/pay/confirm + compensation, budget
-   concurrency; **J4 green**, no-overspend test.
-7. **`feat/duplicate-guard`** — end-to-end duplicate; **J3 green**.
+5. **`feat/decision-workflow`** — Dapr Workflow + config service; **J1 green in
+   verify.py**; CI verify job. ✅ done (PR #6)
+6. **`feat/payment-saga`** — reserve/pay/confirm + compensation, ETag budget
+   concurrency; **J1 ends `paid`, J4 green** (injected failure, budget
+   restored), no-overspend unit test. ✅ done (PR #7)
+7. **`feat/duplicate-guard`** — end-to-end duplicate; **J3 green** (verify 5/5).
+   ✅ done (PR #8)
 8. **`feat/hitl-approval`** — queue + `raise_event` + durable resume; **J2 green
-   incl. restart**; full verify.py (4 journeys + guards) in CI.
+   incl. restart**; canonical INV-1012 J4 + INV-1014A/B concurrency; full
+   verify.py in CI. ⏳ next
 9. **`feat/ui-dashboard`** — React UI + reporting + OpenAPI via gateway.
 10. **`docs/architecture`** — README, ARCHITECTURE.md diagrams, ADR +
     PRODUCT-DILEMMA stubs.
