@@ -32,16 +32,21 @@ FIXTURES = json.loads((ROOT / "Examples" / "sample-invoices.json").read_text(enc
 FIXTURES_BY_ID = {f["id"]: f for f in FIXTURES["fixtures"]}
 
 INTAKE = "http://localhost:8001"
+DECISION = "http://localhost:8002"
+CONFIG = "http://localhost:8003"
 PAYMENT = "http://localhost:8004"
+APPROVAL = "http://localhost:8005"
 
 # Services verify needs — deliberately excludes `ollama` (stub model is used).
 SERVICES = [
     "redis", "rabbitmq", "placement", "scheduler",
     "config", "config-dapr", "intake", "intake-dapr", "decision", "decision-dapr",
-    "payment", "payment-dapr",
+    "payment", "payment-dapr", "approval", "approval-dapr",
 ]
 
-TERMINAL = {"auto_approved", "approved", "rejected", "duplicate", "paid", "payment_failed"}
+# Truly terminal submitter-visible statuses. `auto_approved`/`approved` are
+# intermediate (payment follows), so waiting on them would race the saga.
+TERMINAL = {"rejected", "duplicate", "sent_back", "paid", "payment_failed"}
 
 
 # --------------------------------------------------------------------------- #
@@ -81,6 +86,33 @@ def _get_payment(tracking_id: str) -> dict:
         return json.load(resp)
 
 
+def _get_json(url: str) -> object:
+    with urllib.request.urlopen(url, timeout=10) as resp:
+        return json.load(resp)
+
+
+def _await_status(tracking_id: str, target: str, timeout: float = 60.0) -> dict:
+    deadline = time.time() + timeout
+    last = {}
+    while time.time() < deadline:
+        last = _get_status(tracking_id)
+        if last.get("status") == target:
+            return last
+        time.sleep(1.5)
+    return last
+
+
+def _approve(tracking_id: str, action: str = "approve") -> None:
+    body = json.dumps({"action": action, "approver": "verify@northwind.example"}).encode()
+    req = urllib.request.Request(
+        f"{APPROVAL}/api/approvals/{tracking_id}/decision",
+        data=body,
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        assert resp.status == 200, f"approve failed: {resp.status}"
+
+
 def _await_terminal(tracking_id: str, timeout: float = 90.0) -> dict:
     deadline = time.time() + timeout
     last = {}
@@ -102,28 +134,99 @@ def journey_auto_approve() -> tuple[bool, str]:
     return ok, f"INV-1001 -> {result.get('status')} (auto-approved and paid, no human)"
 
 
+def journey_escalate_and_resume() -> tuple[bool, str]:
+    """Journey 2 (M11): INV-1003 escalates and the workflow durably pauses.
+    We then RESTART the decision service (and its sidecar) between pause and
+    resume, approve via the approval API, and the workflow resumes exactly
+    where it paused — ending in `paid`."""
+    tid = _post_invoice("INV-1003")
+    paused = _await_status(tid, "pending_approval")
+    if paused.get("status") != "pending_approval":
+        return False, f"INV-1003 -> {paused.get('status')} (expected pending_approval)"
+
+    # The approver queue must show the agent's rationale (F4).
+    queue = _get_json(f"{APPROVAL}/api/approvals")
+    entry = next((i for i in queue if i["escalation"]["trackingId"] == tid), None)
+    if entry is None:
+        return False, "escalated item not found in the approval queue"
+    esc = entry["escalation"]
+    if not (esc.get("recommendation") and esc.get("citedRules") is not None
+            and esc.get("confidence") is not None):
+        return False, "queue item is missing recommendation/confidence/cited rules"
+
+    # Durable pause: survive a restart between pause and resume (M11).
+    _compose("restart", "decision")
+    _compose("restart", "decision-dapr")
+    if not _wait_healthy(f"{DECISION}/healthz"):
+        return False, "decision service did not come back after restart"
+    time.sleep(6)  # let the workflow runtime reconnect to the sidecar
+
+    _approve(tid)
+    result = _await_terminal(tid, timeout=120)
+    ok = result.get("status") == "paid"
+    return ok, (
+        f"INV-1003 escalated -> restart decision -> approved -> "
+        f"{result.get('status')} (expected paid)"
+    )
+
+
 def journey_payment_failure_compensation() -> tuple[bool, str]:
-    """Journey 4: an auto-approvable item whose payment is forced to fail must
-    roll back — status payment_failed and the budget fully restored (no orphaned
-    reservation). (The canonical INV-1012 human-approved path lands in Stage 8.)"""
-    fixture = dict(FIXTURES_BY_ID["INV-1001"])
-    fixture["id"] = "INV-FAILTEST"
-    fixture["invoiceNumber"] = "FAIL-TEST-1"  # distinct fingerprint (not a duplicate)
+    """Journey 4 (canonical, INV-1012): capital hardware escalates, a human
+    approves, then the payment is forced to fail — the saga compensates:
+    status payment_failed and the budget fully restored (no orphaned
+    reservation, no partial payment)."""
+    fixture = dict(FIXTURES_BY_ID["INV-1012"])
     fixture["test"] = {"failPayment": True}
     dept = fixture["department"]
 
     before = _get_budget(dept)
     tid = _post_body(fixture)
-    result = _await_terminal(tid)
+    paused = _await_status(tid, "pending_approval")
+    if paused.get("status") != "pending_approval":
+        return False, f"INV-1012 -> {paused.get('status')} (expected pending_approval)"
+
+    _approve(tid)
+    result = _await_terminal(tid, timeout=120)
     after = _get_budget(dept)
 
     status_ok = result.get("status") == "payment_failed"
     budget_ok = before == after  # reserved then released → no net change
     ok = status_ok and budget_ok
     return ok, (
-        f"INV-FAILTEST -> {result.get('status')}; budget {dept} {before}->{after} "
-        f"({'restored' if budget_ok else 'LEAKED'})"
+        f"INV-1012 approved then payment failed -> {result.get('status')}; "
+        f"budget {dept} {before}->{after} ({'restored' if budget_ok else 'LEAKED'})"
     )
+
+
+def guard_concurrent_budget() -> tuple[bool, str]:
+    """INV-1014A/B: two $600 items against the $1,000 marketing budget. After
+    both are human-approved, exactly ONE is paid; the budget never goes below 0."""
+    tid_a = _post_invoice("INV-1014A")
+    tid_b = _post_invoice("INV-1014B")
+    for tid, name in ((tid_a, "A"), (tid_b, "B")):
+        if _await_status(tid, "pending_approval").get("status") != "pending_approval":
+            return False, f"INV-1014{name} did not escalate"
+
+    _approve(tid_a)
+    _approve(tid_b)
+    result_a = _await_terminal(tid_a, timeout=120)
+    result_b = _await_terminal(tid_b, timeout=120)
+    budget = _get_budget("marketing-2026Q2")
+
+    statuses = sorted([result_a.get("status"), result_b.get("status")])
+    ok = statuses == ["paid", "payment_failed"] and float(budget) >= 0
+    return ok, (
+        f"INV-1014A/B -> {result_a.get('status')}/{result_b.get('status')}; "
+        f"marketing budget left: {budget} (exactly one paid, no overspend)"
+    )
+
+
+def guard_no_zero_dodge() -> tuple[bool, str]:
+    """The configured ceiling must be > 0 (an escalate-everything posture fails)."""
+    thresholds = _get_json(f"{CONFIG}/config/thresholds")
+    ceiling = float(thresholds.get("ceiling_usd", 0))
+    ok = ceiling > 0
+    return ok, f"configured AUTONOMY-CEILING = ${ceiling:g} (must be > 0)"
 
 
 def journey_duplicate() -> tuple[bool, str]:
@@ -160,10 +263,16 @@ def guard_prompt_injection() -> tuple[bool, str]:
 CHECKS = [
     # Journey 1 posts INV-1001; Journey 3 then re-submits it as INV-1007.
     ("Journey 1: auto-approve + pay, no human", journey_auto_approve),
+    ("Journey 2: escalate, restart, resume (durable HITL)", journey_escalate_and_resume),
     ("Journey 3: duplicate paid once, resubmit short-circuited", journey_duplicate),
-    ("Journey 4: payment failure + compensation", journey_payment_failure_compensation),
+    (
+        "Journey 4: approve then payment failure + compensation",
+        journey_payment_failure_compensation,
+    ),
     ("Guard: >=2 no-human auto-approvals", guard_second_auto_approve),
     ("Guard: 'approve me' note does not flip", guard_prompt_injection),
+    ("Guard: concurrent approvals never overspend (INV-1014A/B)", guard_concurrent_budget),
+    ("Guard: no $0 dodge (ceiling > 0)", guard_no_zero_dodge),
 ]
 
 
@@ -209,9 +318,10 @@ def main() -> int:
         print("Bringing up the stack with the stub model (this builds images on first run)…")
         _compose("up", "-d", "--build", *SERVICES)
         for name, url in (("intake", f"{INTAKE}/healthz"),
-                          ("decision", "http://localhost:8002/healthz"),
-                          ("config", "http://localhost:8003/healthz"),
-                          ("payment", f"{PAYMENT}/healthz")):
+                          ("decision", f"{DECISION}/healthz"),
+                          ("config", f"{CONFIG}/healthz"),
+                          ("payment", f"{PAYMENT}/healthz"),
+                          ("approval", f"{APPROVAL}/healthz")):
             if not _wait_healthy(url):
                 print(f"FAIL: {name} did not become healthy")
                 return 1

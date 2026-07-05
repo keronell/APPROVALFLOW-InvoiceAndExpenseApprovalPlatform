@@ -207,6 +207,38 @@ services:
       payment:
         condition: service_started
 
+  # ------------------------------------------------------------- approval svc
+  approval:
+    build:
+      context: .
+      dockerfile: services/approval/Dockerfile
+    environment:
+      DAPR_HTTP_PORT: "3500"
+    ports:
+      - "8005:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+  approval-dapr:
+    <<: *dapr-sidecar
+    command:
+      ["./daprd", "--app-id", "approval", "--app-port", "8000",
+       "--dapr-http-port", "3500", "--dapr-grpc-port", "50001",
+       "--resources-path", "/components",
+       "--placement-host-address", "placement:50006",
+       "--scheduler-host-address", "scheduler:50007"]
+    network_mode: "service:approval"
+    depends_on:
+      approval:
+        condition: service_started
+
 volumes:
   scheduler-data:
   ollama-data:

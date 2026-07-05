@@ -5,13 +5,13 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 import dapr.ext.workflow as wf
-from approvalflow_shared.contracts import ItemSubmitted, Topics
+from approvalflow_shared.contracts import HumanDecision, ItemSubmitted, Topics
 from approvalflow_shared.daprio import DaprIO
 from approvalflow_shared.logging import get_logger
 from approvalflow_shared.web import create_app
-from fastapi import Request
+from fastapi import HTTPException, Request
 
-from .workflow import STATE_STORE, decision_workflow, wfr
+from .workflow import HUMAN_DECISION_EVENT, STATE_STORE, decision_workflow, wfr
 
 log = get_logger()
 
@@ -70,6 +70,25 @@ def build_app():
     async def get_decision(tracking_id: str) -> dict:
         record = await app.state.dapr.get_state(STATE_STORE, f"decision::{tracking_id}")
         return record or {"status": "pending"}
+
+    @app.post("/api/decisions/{tracking_id}/human-decision", tags=["decision"])
+    async def human_decision(tracking_id: str, decision: HumanDecision) -> dict:
+        """Raise the approver's decision into the paused workflow (F5/M11).
+
+        Called by the approval service via Dapr service invocation. The workflow
+        resumes exactly where it paused — even across a service restart, because
+        both the pause and the raised event are durable in the state store.
+        """
+        client: wf.DaprWorkflowClient = app.state.wf_client
+        if client.get_workflow_state(tracking_id, fetch_payloads=False) is None:
+            raise HTTPException(status_code=404, detail="No workflow for this tracking id")
+        client.raise_workflow_event(
+            tracking_id,
+            HUMAN_DECISION_EVENT,
+            data=decision.model_dump(mode="json", by_alias=True),
+        )
+        log.info("human_decision_raised", tracking_id=tracking_id, action=str(decision.action))
+        return {"status": "accepted", "action": decision.action}
 
     return app
 
