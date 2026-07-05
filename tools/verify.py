@@ -36,12 +36,15 @@ DECISION = "http://localhost:8002"
 CONFIG = "http://localhost:8003"
 PAYMENT = "http://localhost:8004"
 APPROVAL = "http://localhost:8005"
+REPORTING = "http://localhost:8006"
+GATEWAY = "http://localhost:8080"
 
 # Services verify needs — deliberately excludes `ollama` (stub model is used).
 SERVICES = [
     "redis", "rabbitmq", "placement", "scheduler",
     "config", "config-dapr", "intake", "intake-dapr", "decision", "decision-dapr",
     "payment", "payment-dapr", "approval", "approval-dapr",
+    "reporting", "reporting-dapr", "gateway",
 ]
 
 # Truly terminal submitter-visible statuses. `auto_approved`/`approved` are
@@ -229,6 +232,32 @@ def guard_no_zero_dodge() -> tuple[bool, str]:
     return ok, f"configured AUTONOMY-CEILING = ${ceiling:g} (must be > 0)"
 
 
+def check_gateway() -> tuple[bool, str]:
+    """M6: the gateway is the single entry point — it serves the UI, proxies the
+    API (submit + status through :8080), and exposes the dashboard metrics."""
+    with urllib.request.urlopen(f"{GATEWAY}/", timeout=10) as resp:
+        ui_ok = resp.status == 200 and b"ApprovalFlow" in resp.read()
+
+    fixture = dict(FIXTURES_BY_ID["INV-1017"])  # in-policy hardware, auto-approves
+    body = json.dumps(fixture).encode()
+    req = urllib.request.Request(
+        f"{GATEWAY}/api/invoices", data=body, headers={"Content-Type": "application/json"}
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        tid = json.load(resp)["trackingId"]
+    with urllib.request.urlopen(f"{GATEWAY}/api/invoices/{tid}", timeout=10) as resp:
+        status_ok = resp.status == 200
+
+    summary = _get_json(f"{GATEWAY}/api/reports/summary")
+    metrics_ok = summary.get("submitted", 0) >= 1
+
+    ok = ui_ok and status_ok and metrics_ok
+    return ok, (
+        f"UI served: {ui_ok}; submit+status proxied: {status_ok}; "
+        f"dashboard metrics visible: {metrics_ok} (submitted={summary.get('submitted')})"
+    )
+
+
 def journey_duplicate() -> tuple[bool, str]:
     """Journey 3: INV-1007 is an exact re-submission of INV-1001 (same vendor +
     invoice number + total). INV-1001 was already submitted by Journey 1, so the
@@ -273,6 +302,7 @@ CHECKS = [
     ("Guard: 'approve me' note does not flip", guard_prompt_injection),
     ("Guard: concurrent approvals never overspend (INV-1014A/B)", guard_concurrent_budget),
     ("Guard: no $0 dodge (ceiling > 0)", guard_no_zero_dodge),
+    ("Gateway: single entry point serves UI + API + metrics", check_gateway),
 ]
 
 
@@ -321,7 +351,9 @@ def main() -> int:
                           ("decision", f"{DECISION}/healthz"),
                           ("config", f"{CONFIG}/healthz"),
                           ("payment", f"{PAYMENT}/healthz"),
-                          ("approval", f"{APPROVAL}/healthz")):
+                          ("approval", f"{APPROVAL}/healthz"),
+                          ("reporting", f"{REPORTING}/healthz"),
+                          ("gateway", f"{GATEWAY}/healthz")):
             if not _wait_healthy(url):
                 print(f"FAIL: {name} did not become healthy")
                 return 1

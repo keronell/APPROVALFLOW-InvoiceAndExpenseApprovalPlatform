@@ -5,6 +5,7 @@
 -e services/config
 -e services/payment
 -e services/approval
+-e services/reporting
 
 pytest>=8.2
 anyio>=4.3
