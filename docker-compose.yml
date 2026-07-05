@@ -239,6 +239,55 @@ services:
       approval:
         condition: service_started
 
+  # ------------------------------------------------------------ reporting svc
+  reporting:
+    build:
+      context: .
+      dockerfile: services/reporting/Dockerfile
+    environment:
+      DAPR_HTTP_PORT: "3500"
+    ports:
+      - "8006:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+  reporting-dapr:
+    <<: *dapr-sidecar
+    command:
+      ["./daprd", "--app-id", "reporting", "--app-port", "8000",
+       "--dapr-http-port", "3500", "--dapr-grpc-port", "50001",
+       "--resources-path", "/components",
+       "--placement-host-address", "placement:50006",
+       "--scheduler-host-address", "scheduler:50007"]
+    network_mode: "service:reporting"
+    depends_on:
+      reporting:
+        condition: service_started
+
+  # ------------------------------------------------------------------ gateway
+  # The single external entry point (M6): serves the UI, proxies the API,
+  # rate-limits, and stamps a correlation id on every request.
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    ports:
+      - "8080:8080"
+    depends_on:
+      intake:
+        condition: service_started
+      approval:
+        condition: service_started
+      reporting:
+        condition: service_started
+
 volumes:
   scheduler-data:
   ollama-data:
