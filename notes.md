@@ -58,14 +58,19 @@ plus operating constraints and things worth remembering. `spec.md` = what;
 - Commit multi-line messages via `git commit -F <file>` (PowerShell has no
   heredoc and mangles inline multi-line `-m`).
 
-## Status snapshot (at pause)
+## Status snapshot (2026-07-05)
 
-- Stages 1–4 complete, tested (70 tests, ruff clean), pushed as branches:
-  `chore/scaffold`, `feat/policy-engine-router`, `feat/intake`, `feat/agent`,
-  plus `docs/claude-md`.
-- Pending owner action: `gh auth login` so PRs can be opened/merged to `main`.
-- Next stage: **5 — decision Dapr Workflow + config service + Journey 1** end to
-  end through live containers.
+- Stages 1–7 complete and merged to `main` via PRs #1–#8; `main` is green
+  (85 tests, ruff clean) and demo-ready.
+- `tools/verify.py` passes **5/5** on a cold `docker compose up` with the stub
+  model: J1 auto-approve→paid, J3 duplicate short-circuit, J4 payment failure +
+  compensation (budget restored), ≥2 no-human auto-approvals, "approve me"
+  note does not flip.
+- Services live: intake (8001), decision (8002), config (8003), payment (8004),
+  each with its own daprd sidecar; RabbitMQ + Redis + placement + scheduler +
+  ollama in compose.
+- Next: **Stage 8 — HITL approval + durable pause/resume (J2, M11)**, then
+  Stage 9 (UI + reporting + nginx gateway), Stage 10 (docs), then nice-to-haves.
 
 ## Source-of-truth files (do not contradict)
 
