@@ -14,7 +14,11 @@ import asyncio
 
 import dapr.ext.workflow as wf
 from approvalflow_shared.contracts import (
+    ApprovalAction,
     DecisionMade,
+    EscalationRequested,
+    HumanDecision,
+    ItemStatus,
     ItemSubmitted,
     PaymentRequested,
     StatusChanged,
@@ -31,6 +35,7 @@ from .decision_core import decide
 log = get_logger()
 
 STATE_STORE = "statestore"
+HUMAN_DECISION_EVENT = "HumanDecision"
 wfr = wf.WorkflowRuntime()
 
 
@@ -39,11 +44,25 @@ wfr = wf.WorkflowRuntime()
 # --------------------------------------------------------------------------- #
 @wfr.workflow(name="decision_workflow")
 def decision_workflow(ctx: wf.DaprWorkflowContext, item: dict):
-    """item = ItemSubmitted (dict). Returns the DecisionRecord (dict)."""
+    """item = ItemSubmitted (dict). Returns the final DecisionRecord (dict).
+
+    For a `human_review` route the workflow pauses durably on an external
+    event (M11): its state lives in the Dapr actor state store, so it survives
+    a service restart between pause and resume, and the approver's decision
+    (raised by the approval service, F5) resumes it exactly where it paused.
+    """
     decision = yield ctx.call_activity(decide_activity, input=item)
     yield ctx.call_activity(
         publish_outcome_activity, input={"item": item, "decision": decision}
     )
+
+    if decision["route"] == Route.HUMAN_REVIEW:
+        human = yield ctx.wait_for_external_event(HUMAN_DECISION_EVENT)
+        decision = yield ctx.call_activity(
+            apply_human_decision_activity,
+            input={"item": item, "decision": decision, "human": human},
+        )
+
     return decision
 
 
@@ -125,6 +144,91 @@ async def _publish_outcome(payload: dict) -> None:
                 ),
                 correlation_id=correlation_id,
             )
+        # Escalations carry the agent's rationale to the approver queue (F4).
+        elif record.route == Route.HUMAN_REVIEW:
+            await dapr.publish(
+                Topics.ESCALATION_REQUESTED,
+                EscalationRequested(
+                    tracking_id=record.tracking_id,
+                    correlation_id=correlation_id,
+                    invoice_id=record.invoice_id,
+                    submitter=submitted.invoice.submitter,
+                    department=submitted.invoice.department,
+                    vendor=submitted.invoice.vendor,
+                    usd_amount=record.usd_amount,
+                    reason=record.reason,
+                    cited_rules=record.cited_rules,
+                    recommendation=str(record.assessment.recommendation),
+                    confidence=record.assessment.confidence,
+                    risk=record.assessment.risk,
+                ),
+                correlation_id=correlation_id,
+            )
     finally:
         await dapr.aclose()
     log.info("decision_published", tracking_id=record.tracking_id, route=str(record.route))
+
+
+@wfr.activity(name="apply_human_decision_activity")
+def apply_human_decision_activity(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
+    return asyncio.run(_apply_human_decision(payload))
+
+
+_ACTION_OUTCOME: dict[ApprovalAction, tuple[ItemStatus, str]] = {
+    ApprovalAction.APPROVE: (ItemStatus.APPROVED, "Approved by a human reviewer."),
+    ApprovalAction.REJECT: (ItemStatus.REJECTED, "Rejected by a human reviewer."),
+    ApprovalAction.SEND_BACK: (
+        ItemStatus.SENT_BACK,
+        "Sent back by a human reviewer — please resubmit with the requested information.",
+    ),
+}
+
+
+async def _apply_human_decision(payload: dict) -> dict:
+    """Resume point after the durable pause: apply approve/reject/send-back."""
+    submitted = ItemSubmitted.model_validate(payload["item"])
+    record = DecisionRecord.model_validate(payload["decision"])
+    human = HumanDecision.model_validate(payload["human"])
+    correlation_id = record.correlation_id
+
+    status, reason = _ACTION_OUTCOME[human.action]
+    if human.note:
+        reason = f"{reason} Note: {human.note}"
+    record.status = status
+    record.reason = reason
+
+    dapr = DaprIO()
+    try:
+        await dapr.save_state(
+            STATE_STORE, f"decision::{record.tracking_id}", record.model_dump(mode="json")
+        )
+        await dapr.publish(
+            Topics.ITEM_STATUS_CHANGED,
+            StatusChanged(
+                tracking_id=record.tracking_id,
+                correlation_id=correlation_id,
+                status=status,
+                reason=reason,
+            ),
+            correlation_id=correlation_id,
+        )
+        if human.action == ApprovalAction.APPROVE:
+            await dapr.publish(
+                Topics.PAYMENT_REQUESTED,
+                PaymentRequested(
+                    tracking_id=record.tracking_id,
+                    correlation_id=correlation_id,
+                    invoice=submitted.invoice,
+                    usd_amount=record.usd_amount,
+                ),
+                correlation_id=correlation_id,
+            )
+    finally:
+        await dapr.aclose()
+    log.info(
+        "human_decision_applied",
+        tracking_id=record.tracking_id,
+        action=str(human.action),
+        approver=human.approver,
+    )
+    return record.model_dump(mode="json")

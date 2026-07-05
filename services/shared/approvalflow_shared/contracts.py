@@ -160,3 +160,46 @@ class PaymentRequested(_CamelModel):
     correlation_id: str
     invoice: InvoiceSubmission
     usd_amount: str
+
+
+class ApprovalAction(StrEnum):
+    """What an approver can do with an escalated item — one action (F5)."""
+
+    APPROVE = "approve"
+    REJECT = "reject"
+    SEND_BACK = "send_back"
+
+
+class EscalationRequested(_CamelModel):
+    """Event carrying everything the approver queue needs to show (F4)."""
+
+    tracking_id: str
+    correlation_id: str
+    invoice_id: str
+    submitter: str
+    department: str
+    vendor: str
+    usd_amount: str
+    reason: str
+    cited_rules: list[str] = Field(default_factory=list)
+    recommendation: str
+    confidence: float
+    risk: str = "unknown"
+
+
+class HumanDecision(_CamelModel):
+    """The approver's decision, raised into the paused decision workflow (F5/M11)."""
+
+    action: ApprovalAction
+    approver: str = "approver@northwind.example"
+    note: str = ""
+
+
+class EscalationResolved(_CamelModel):
+    """Event announcing a human decision (consumed by reporting)."""
+
+    tracking_id: str
+    correlation_id: str
+    action: ApprovalAction
+    usd_amount: str
+    approver: str = ""
