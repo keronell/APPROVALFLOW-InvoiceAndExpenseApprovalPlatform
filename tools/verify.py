@@ -24,6 +24,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -37,6 +38,7 @@ CONFIG = "http://localhost:8003"
 PAYMENT = "http://localhost:8004"
 APPROVAL = "http://localhost:8005"
 REPORTING = "http://localhost:8006"
+NOTIFICATION = "http://localhost:8007"
 GATEWAY = "http://localhost:8080"
 
 # Services verify needs — deliberately excludes `ollama` (stub model is used).
@@ -44,7 +46,7 @@ SERVICES = [
     "redis", "rabbitmq", "placement", "scheduler",
     "config", "config-dapr", "intake", "intake-dapr", "decision", "decision-dapr",
     "payment", "payment-dapr", "approval", "approval-dapr",
-    "reporting", "reporting-dapr", "gateway",
+    "reporting", "reporting-dapr", "notification", "notification-dapr", "gateway",
 ]
 
 # Truly terminal submitter-visible statuses. `auto_approved`/`approved` are
@@ -232,6 +234,24 @@ def guard_no_zero_dodge() -> tuple[bool, str]:
     return ok, f"configured AUTONOMY-CEILING = ${ceiling:g} (must be > 0)"
 
 
+def check_notification_inbox() -> tuple[bool, str]:
+    """M8: the final result is delivered on a notification channel — INV-1001's
+    submitter finds a `paid` notification in their inbox (via the gateway),
+    without knowing the tracking id."""
+    submitter = FIXTURES_BY_ID["INV-1001"]["submitter"]
+    inbox = _get_json(
+        f"{GATEWAY}/api/notifications?submitter={urllib.parse.quote(submitter)}"
+    )
+    entry = next(
+        (n for n in inbox if n["invoice_id"] == "INV-1001" and n["status"] == "paid"), None
+    )
+    ok = entry is not None
+    return ok, (
+        f"inbox({submitter}): {len(inbox)} notification(s); "
+        f"INV-1001 paid present: {ok}"
+    )
+
+
 def check_gateway() -> tuple[bool, str]:
     """M6: the gateway is the single entry point — it serves the UI, proxies the
     API (submit + status through :8080), and exposes the dashboard metrics."""
@@ -303,6 +323,7 @@ CHECKS = [
     ("Guard: concurrent approvals never overspend (INV-1014A/B)", guard_concurrent_budget),
     ("Guard: no $0 dodge (ceiling > 0)", guard_no_zero_dodge),
     ("Gateway: single entry point serves UI + API + metrics", check_gateway),
+    ("M8: final outcome delivered to the submitter's inbox", check_notification_inbox),
 ]
 
 
@@ -353,6 +374,7 @@ def main() -> int:
                           ("payment", f"{PAYMENT}/healthz"),
                           ("approval", f"{APPROVAL}/healthz"),
                           ("reporting", f"{REPORTING}/healthz"),
+                          ("notification", f"{NOTIFICATION}/healthz"),
                           ("gateway", f"{GATEWAY}/healthz")):
             if not _wait_healthy(url):
                 print(f"FAIL: {name} did not become healthy")

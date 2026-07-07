@@ -158,6 +158,44 @@ function ApprovalsView() {
   );
 }
 
+// ----------------------------------------------------------------- Inbox view
+function InboxView() {
+  const [submitter, setSubmitter] = useState("dana.cohen@northwind.example");
+  const [inbox, setInbox] = useState([]);
+
+  const refresh = useCallback(async () => {
+    if (!submitter) return;
+    try {
+      setInbox(await jsonFetch(`/api/notifications?submitter=${encodeURIComponent(submitter)}`));
+    } catch { /* ignore while warming up */ }
+  }, [submitter]);
+
+  useEffect(() => {
+    refresh();
+    const timer = setInterval(refresh, 3000);
+    return () => clearInterval(timer);
+  }, [refresh]);
+
+  return (
+    <section>
+      <h2>Inbox <small>(final outcomes for a submitter)</small></h2>
+      <div className="row">
+        <input placeholder="submitter email" value={submitter}
+          onChange={(e) => setSubmitter(e.target.value.trim())} />
+        <button onClick={refresh}>Refresh</button>
+      </div>
+      {inbox.length === 0 && <p className="note">No notifications yet.</p>}
+      {inbox.map((n) => (
+        <div className="card" key={`${n.tracking_id}-${n.status}`}>
+          <p><strong>{n.invoice_id}</strong> — <Badge status={n.status} /></p>
+          <p className="reason">{n.reason}</p>
+          <p className="note">tracking id: <code>{n.tracking_id}</code></p>
+        </div>
+      ))}
+    </section>
+  );
+}
+
 // ------------------------------------------------------------- Dashboard view
 function DashboardView() {
   const [summary, setSummary] = useState(null);
@@ -204,7 +242,7 @@ function DashboardView() {
 }
 
 // ------------------------------------------------------------------------ App
-const TABS = ["Submit", "Track", "Approvals", "Dashboard"];
+const TABS = ["Submit", "Track", "Inbox", "Approvals", "Dashboard"];
 
 export default function App() {
   const [tab, setTab] = useState("Submit");
@@ -227,6 +265,7 @@ export default function App() {
         <SubmitView onSubmitted={(tid) => { setTrackingId(tid); setTab("Track"); }} />
       )}
       {tab === "Track" && <TrackView trackingId={trackingId} setTrackingId={setTrackingId} />}
+      {tab === "Inbox" && <InboxView />}
       {tab === "Approvals" && <ApprovalsView />}
       {tab === "Dashboard" && <DashboardView />}
     </main>

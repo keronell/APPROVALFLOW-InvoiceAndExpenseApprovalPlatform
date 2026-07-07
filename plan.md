@@ -25,7 +25,7 @@ intake ──item.submitted──▶ decision (Dapr Workflow orchestrator)
 | **decision** | per-item Dapr Workflow: PolicyEngine → MAF agent → Router → escalate/reject/auto-approve → hand to payment → publish events; enforces the ceiling (M12/F10/F4/F6) | workflow state, decision records |
 | **approval** | escalation queue with recommendation/confidence/cited rules; approve/reject/send-back in one action → raises workflow event; durable pause/resume (F4/F5/M11) | queue items (Redis) |
 | **payment** | saga: ReserveBudget → ExecutePayment → ConfirmPayment + ReleaseBudget compensation; per-department budget with ETag concurrency; idempotent (M9/M10) | budgets, reservations, payments (Redis) |
-| **notification** | subscribes final-outcome events; per-submitter inbox (M8) — **NOT BUILT, see Open items** | notifications (Redis) |
+| **notification** | subscribes `item.submitted` + `item.status-changed`; files terminal outcomes into a per-submitter inbox (M8) | item refs + inboxes (Redis) |
 | **config** | serves/updates policy + thresholds via the Dapr config store; read fresh per item → change without redeploy (F7/M13) | policy + thresholds (Redis config store) |
 | **reporting** | subscribes all events; metrics + audit trail per correlation id (F8/F9) | aggregates + audit log (Redis) |
 
@@ -63,7 +63,7 @@ loop offline, used by CI and `tools/verify.py`.
 ## Repo layout
 
 ```
-services/{intake,decision,approval,payment,config,reporting}/  # FastAPI + Dockerfile each
+services/{intake,decision,approval,payment,notification,config,reporting}/  # FastAPI + Dockerfile each
 services/shared/     approvalflow_shared (contracts, correlation, logging, app factory)
 gateway/  ui/        nginx + React/Vite
 dapr/components/     pubsub (rabbitmq), statestore + configstore (redis), secretstore (env)
@@ -108,15 +108,12 @@ and CI is green. PR descriptions map to requirement IDs.
 
 ## Open items (honest gaps)
 
-- **M8 — notification channel is partial.** The planned **notification service
-  (per-submitter inbox) was not built.** What exists today: intake returns an
-  immediate `202 + tracking id` (async ✅), final outcomes are delivered as
-  `item.status-changed` events consumed by intake, and the submitter sees the
-  result by polling `GET /api/invoices/{id}` (the UI does this automatically).
-  That is a **pull** channel, not a push notification. Either build the
-  notification service on its own branch (subscribe final-outcome events →
-  per-submitter inbox / SSE) or explicitly defend event-driven status +
-  polling as the notification channel in the README/ADR.
+- ~~**M8 — notification channel is partial.**~~ **Resolved** (branch
+  `feat/notification-inbox`): a notification service (port 8007) subscribes
+  `item.submitted` + `item.status-changed` and files terminal outcomes
+  (paid / payment_failed / rejected / sent_back) into a per-submitter inbox at
+  `GET /api/notifications?submitter=…` (gateway-routed, UI "Inbox" tab);
+  verify.py asserts INV-1001's submitter receives the `paid` notification.
 - **Unused Dapr configuration component.** `dapr/components/configstore.yaml`
   (`configuration.redis`) is defined but unused — thresholds live in the
   *state store* and are served over service invocation. Wire it or remove it
