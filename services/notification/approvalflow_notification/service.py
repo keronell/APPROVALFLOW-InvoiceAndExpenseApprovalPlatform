@@ -47,6 +47,11 @@ class InboxStore(Protocol):
 
     async def get_ref(self, tracking_id: str) -> ItemRef | None: ...
 
+    async def claim(self, key: str) -> bool:
+        """Atomic claim for at-least-once dedupe: one notification per
+        (item, terminal status), even under redelivery/concurrency (M10)."""
+        ...
+
     async def append(self, submitter: str, notification: Notification) -> None: ...
 
     async def inbox(self, submitter: str) -> list[Notification]: ...
@@ -56,12 +61,19 @@ class InMemoryInboxStore:
     def __init__(self) -> None:
         self._refs: dict[str, ItemRef] = {}
         self._inboxes: dict[str, list[Notification]] = {}
+        self._claims: set[str] = set()
 
     async def put_ref(self, tracking_id: str, ref: ItemRef) -> None:
         self._refs[tracking_id] = ref
 
     async def get_ref(self, tracking_id: str) -> ItemRef | None:
         return self._refs.get(tracking_id)
+
+    async def claim(self, key: str) -> bool:
+        if key in self._claims:
+            return False
+        self._claims.add(key)
+        return True
 
     async def append(self, submitter: str, notification: Notification) -> None:
         self._inboxes.setdefault(submitter, []).append(notification)
@@ -90,9 +102,9 @@ class NotificationService:
             # status event for an item we never saw submitted — nothing to address.
             log.warning("notification_for_unknown_item", tracking_id=event.tracking_id)
             return
-        # Idempotent on redelivery: one notification per (item, terminal status).
-        existing = await self._store.inbox(ref.submitter)
-        if any(n.tracking_id == event.tracking_id and n.status == event.status for n in existing):
+        # Idempotent on redelivery: an atomic claim per (item, terminal status),
+        # race-safe unlike scanning the inbox read-modify-write style.
+        if not await self._store.claim(f"notified::{event.tracking_id}::{event.status}"):
             return
         await self._store.append(
             ref.submitter,

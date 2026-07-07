@@ -57,3 +57,20 @@ def test_audit_trail_collects_every_event_for_one_item(client):
 
 def test_unknown_item_has_empty_trail(client):
     assert client.get("/api/audit/nope").json() == []
+
+
+def test_redelivered_event_does_not_double_count(client):
+    """M10: at-least-once delivery must not inflate counters or duplicate
+    audit entries — the (topic, tracking id) claim drops redeliveries."""
+    _event(client, "item.submitted", "t1")
+    _event(client, "item.submitted", "t1")  # pub/sub redelivery
+    _event(client, "decision.made", "t1", route="auto_approve", usdAmount="42.00")
+    _event(client, "decision.made", "t1", route="auto_approve", usdAmount="42.00")
+
+    summary = client.get("/api/reports/summary").json()
+    assert summary["submitted"] == 1
+    assert summary["auto_approved"] == 1
+    assert summary["auto_approved_usd"] == "42.00"  # not 84.00
+
+    trail = client.get("/api/audit/t1").json()
+    assert [e["topic"] for e in trail] == ["item.submitted", "decision.made"]

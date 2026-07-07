@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Callable
 from decimal import Decimal
 from typing import Protocol, runtime_checkable
 
+from approvalflow_shared.logging import get_logger
 from pydantic import BaseModel, Field
+
+log = get_logger()
 
 STATE_STORE = "statestore"
 METRICS_KEY = "metrics"
@@ -43,11 +47,24 @@ class AuditEntry(BaseModel):
     payload: dict
 
 
+MetricsMutation = Callable[[Metrics], None]
+
+
 @runtime_checkable
 class ReportStore(Protocol):
+    async def claim_event(self, event_key: str) -> bool:
+        """Atomically claim an event key; False if it was already processed.
+        This is the at-least-once dedupe: a redelivered event must not inflate
+        counters or duplicate audit entries (M10)."""
+        ...
+
     async def get_metrics(self) -> Metrics: ...
 
-    async def put_metrics(self, metrics: Metrics) -> None: ...
+    async def update_metrics(self, mutate: MetricsMutation) -> None:
+        """Apply ``mutate`` to the current metrics atomically. Implementations
+        must re-read and re-apply on write conflicts so concurrent events never
+        lose each other's updates."""
+        ...
 
     async def append_audit(self, tracking_id: str, entry: AuditEntry) -> None: ...
 
@@ -58,12 +75,19 @@ class InMemoryReportStore:
     def __init__(self) -> None:
         self._metrics = Metrics()
         self._audit: dict[str, list[AuditEntry]] = {}
+        self._seen: set[str] = set()
+
+    async def claim_event(self, event_key: str) -> bool:
+        if event_key in self._seen:
+            return False
+        self._seen.add(event_key)
+        return True
 
     async def get_metrics(self) -> Metrics:
         return self._metrics
 
-    async def put_metrics(self, metrics: Metrics) -> None:
-        self._metrics = metrics
+    async def update_metrics(self, mutate: MetricsMutation) -> None:
+        mutate(self._metrics)
 
     async def append_audit(self, tracking_id: str, entry: AuditEntry) -> None:
         self._audit.setdefault(tracking_id, []).append(entry)
@@ -82,36 +106,18 @@ class ReportingService:
 
     async def record(self, topic: str, payload: dict) -> None:
         tracking_id = payload.get("trackingId") or payload.get("tracking_id") or "unknown"
-        await self._store.append_audit(tracking_id, AuditEntry(topic=topic, payload=payload))
 
-        metrics = await self._store.get_metrics()
-        if topic == "item.submitted":
-            metrics.submitted += 1
-        elif topic == "decision.made":
-            route = payload.get("route", "")
-            usd = payload.get("usdAmount", "0")
-            if route == "auto_approve":
-                metrics.auto_approved += 1
-                metrics.add_usd("auto_approved_usd", usd)
-            elif route == "human_review":
-                metrics.escalated += 1
-            elif route == "reject":
-                metrics.rejected_by_router += 1
-        elif topic == "escalation.resolved":
-            action = payload.get("action", "")
-            usd = payload.get("usdAmount", "0")
-            if action == "approve":
-                metrics.human_approved += 1
-                metrics.add_usd("human_approved_usd", usd)
-            elif action == "reject":
-                metrics.human_rejected += 1
-            elif action == "send_back":
-                metrics.sent_back += 1
-        elif topic == "payment.completed":
-            metrics.paid += 1
-        elif topic == "payment.failed":
-            metrics.payment_failed += 1
-        await self._store.put_metrics(metrics)
+        # Each business topic legitimately fires at most once per item, so
+        # (topic, tracking id) identifies the event. A pub/sub redelivery
+        # loses this claim and is dropped before touching audit or metrics.
+        if not await self._store.claim_event(f"{topic}::{tracking_id}"):
+            log.info("event_redelivery_ignored", topic=topic, tracking_id=tracking_id)
+            return
+
+        await self._store.append_audit(tracking_id, AuditEntry(topic=topic, payload=payload))
+        # The mutation is applied inside the store's conflict-retry loop, so a
+        # concurrent event's increments are never overwritten.
+        await self._store.update_metrics(lambda m: _apply(m, topic, payload))
 
     async def summary(self) -> dict:
         metrics = await self._store.get_metrics()
@@ -119,3 +125,33 @@ class ReportingService:
 
     async def audit_trail(self, tracking_id: str) -> list[AuditEntry]:
         return await self._store.get_audit(tracking_id)
+
+
+def _apply(metrics: Metrics, topic: str, payload: dict) -> None:
+    """Pure metric increments for one event (runs inside the store's retry loop)."""
+    if topic == "item.submitted":
+        metrics.submitted += 1
+    elif topic == "decision.made":
+        route = payload.get("route", "")
+        usd = payload.get("usdAmount", "0")
+        if route == "auto_approve":
+            metrics.auto_approved += 1
+            metrics.add_usd("auto_approved_usd", usd)
+        elif route == "human_review":
+            metrics.escalated += 1
+        elif route == "reject":
+            metrics.rejected_by_router += 1
+    elif topic == "escalation.resolved":
+        action = payload.get("action", "")
+        usd = payload.get("usdAmount", "0")
+        if action == "approve":
+            metrics.human_approved += 1
+            metrics.add_usd("human_approved_usd", usd)
+        elif action == "reject":
+            metrics.human_rejected += 1
+        elif action == "send_back":
+            metrics.sent_back += 1
+    elif topic == "payment.completed":
+        metrics.paid += 1
+    elif topic == "payment.failed":
+        metrics.payment_failed += 1

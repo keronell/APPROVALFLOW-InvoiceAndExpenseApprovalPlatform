@@ -32,21 +32,52 @@ _TOPICS = [
 
 
 class DaprReportStore:
+    """Claims are atomic inserts; list/metric writes are ETag-conditional and
+    retried, so concurrent events neither double count nor overwrite each
+    other's updates."""
+
+    _RETRIES = 8
+
     def __init__(self, dapr: DaprIO) -> None:
         self._dapr = dapr
+
+    async def claim_event(self, event_key: str) -> bool:
+        return await self._dapr.try_insert_state(STATE_STORE, f"seen::{event_key}", 1)
 
     async def get_metrics(self) -> Metrics:
         value = await self._dapr.get_state(STATE_STORE, METRICS_KEY)
         return Metrics.model_validate(value) if value else Metrics()
 
-    async def put_metrics(self, metrics: Metrics) -> None:
-        await self._dapr.save_state(STATE_STORE, METRICS_KEY, metrics.model_dump(mode="json"))
+    async def _conditional_save(self, key: str, value: object, etag: str | None) -> bool:
+        """First write of a key uses atomic insert; later writes are
+        ETag-conditional — no lost updates in either phase."""
+        if etag is None:
+            return await self._dapr.try_insert_state(STATE_STORE, key, value)
+        return await self._dapr.try_save_state(STATE_STORE, key, value, etag=etag)
+
+    async def update_metrics(self, mutate) -> None:
+        # Full read-modify-write inside the retry loop: on a conflict we
+        # re-read the fresh aggregate and re-apply the mutation, so a
+        # concurrent event's increments are never overwritten.
+        for _ in range(self._RETRIES):
+            value, etag = await self._dapr.get_state_and_etag(STATE_STORE, METRICS_KEY)
+            metrics = Metrics.model_validate(value) if value else Metrics()
+            mutate(metrics)
+            if await self._conditional_save(
+                METRICS_KEY, metrics.model_dump(mode="json"), etag
+            ):
+                return
+        raise RuntimeError("could not persist metrics after retries")
 
     async def append_audit(self, tracking_id: str, entry: AuditEntry) -> None:
         key = f"audit::{tracking_id}"
-        trail: list = await self._dapr.get_state(STATE_STORE, key) or []  # type: ignore[assignment]
-        trail.append(entry.model_dump(mode="json"))
-        await self._dapr.save_state(STATE_STORE, key, trail)
+        for _ in range(self._RETRIES):
+            trail, etag = await self._dapr.get_state_and_etag(STATE_STORE, key)
+            trail = list(trail or [])  # type: ignore[arg-type]
+            trail.append(entry.model_dump(mode="json"))
+            if await self._conditional_save(key, trail, etag):
+                return
+        raise RuntimeError(f"could not append audit entry for {tracking_id}")
 
     async def get_audit(self, tracking_id: str) -> list[AuditEntry]:
         trail: list = await self._dapr.get_state(STATE_STORE, f"audit::{tracking_id}") or []  # type: ignore[assignment]

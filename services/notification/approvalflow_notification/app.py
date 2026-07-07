@@ -22,6 +22,8 @@ log = get_logger()
 
 
 class DaprInboxStore:
+    _RETRIES = 8
+
     def __init__(self, dapr: DaprIO) -> None:
         self._dapr = dapr
 
@@ -34,11 +36,23 @@ class DaprInboxStore:
         value = await self._dapr.get_state(STATE_STORE, f"ref::{tracking_id}")
         return ItemRef.model_validate(value) if value else None
 
+    async def claim(self, key: str) -> bool:
+        return await self._dapr.try_insert_state(STATE_STORE, key, 1)
+
     async def append(self, submitter: str, notification: Notification) -> None:
+        # Conditional append (insert on first write, ETag afterwards) so two
+        # near-simultaneous outcomes for one submitter never lose an entry.
         key = f"inbox::{submitter}"
-        inbox: list = await self._dapr.get_state(STATE_STORE, key) or []  # type: ignore[assignment]
-        inbox.append(notification.model_dump(mode="json"))
-        await self._dapr.save_state(STATE_STORE, key, inbox)
+        for _ in range(self._RETRIES):
+            inbox, etag = await self._dapr.get_state_and_etag(STATE_STORE, key)
+            inbox = list(inbox or [])  # type: ignore[arg-type]
+            inbox.append(notification.model_dump(mode="json"))
+            if etag is None:
+                if await self._dapr.try_insert_state(STATE_STORE, key, inbox):
+                    return
+            elif await self._dapr.try_save_state(STATE_STORE, key, inbox, etag=etag):
+                return
+        raise RuntimeError(f"could not append notification for {submitter}")
 
     async def inbox(self, submitter: str) -> list[Notification]:
         inbox: list = await self._dapr.get_state(STATE_STORE, f"inbox::{submitter}") or []  # type: ignore[assignment]
