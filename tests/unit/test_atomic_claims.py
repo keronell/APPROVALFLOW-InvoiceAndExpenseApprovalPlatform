@@ -76,8 +76,16 @@ async def test_idempotency_key_claims_share_semantics(sidecar, store):
 
 @pytest.mark.anyio
 async def test_conflict_shapes_are_recognized():
-    """409, 412, and the 500-with-etag-text variant all count as conflicts."""
-    for status, text in ((409, "conflict"), (412, "precondition"), (500, "possible etag mismatch")):
+    """409, 412, the 500-with-etag-text variant, and the Redis component's
+    observed ERR_STATE_SAVE 'failed to set key' 500 all count as conflicts."""
+    shapes = (
+        (409, "conflict"),
+        (412, "precondition"),
+        (500, "possible etag mismatch"),
+        (500, '{"errorCode":"ERR_STATE_SAVE","message":"failed saving state in state '
+              'store statestore: failed to set key intake||fp::x: ERR user_script:14"}'),
+    )
+    for status, text in shapes:
         def handler(request, status=status, text=text):
             return httpx.Response(status, text=text)
 

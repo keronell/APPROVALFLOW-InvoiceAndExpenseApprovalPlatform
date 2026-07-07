@@ -59,11 +59,16 @@ class DaprIO:
 
     @staticmethod
     def _is_conflict(resp: httpx.Response) -> bool:
-        """Dapr reports optimistic-concurrency conflicts as 409/412 (and some
-        component versions as a 500 whose body names the etag mismatch)."""
+        """Dapr reports optimistic-concurrency conflicts as 409/412 — except the
+        Redis component (observed on 1.18), which surfaces the first-write/etag
+        Lua-script rejection as a 500 ERR_STATE_SAVE whose message reads
+        "failed to set key ..."."""
         if resp.status_code in (409, 412):
             return True
-        return resp.status_code == 500 and "etag" in resp.text.lower()
+        if resp.status_code == 500:
+            text = resp.text.lower()
+            return "etag" in text or "failed to set key" in text
+        return False
 
     async def try_save_state(
         self, store: str, key: str, value: object, *, etag: str | None = None
