@@ -82,7 +82,8 @@ sequenceDiagram
     IN--)DE: Dapr pub/sub (RabbitMQ): item.submitted
     Note over DE: Dapr Workflow: schedule decision_workflow<br/>(instance id = tracking id → redelivered events start nothing)
     DE->>CF: Dapr service invocation: GET config/thresholds
-    CF-->>DE: thresholds ($250 ceiling, 0.80 confidence)<br/>fallback to safe defaults if unreachable
+    CF-->>DE: thresholds ($250 ceiling, 0.80 confidence)
+    Note over DE: if the invoke fails or returns nothing, DE falls back<br/>client-side to hardcoded defaults ($250/0.80) — config_client.py,<br/>logged as thresholds_fetch_failed, never crashes
     Note over DE: PolicyEngine (deterministic) + MAF agent (advisory)<br/>→ deterministic router decides (M12/F10)
     DE->>DE: Dapr state store: save decision::{trackingId} (audit, F9)
     DE--)IN: Dapr pub/sub: item.status-changed
@@ -101,13 +102,12 @@ sequenceDiagram
         GW->>AP: proxy
         AP->>DE: Dapr service invocation:<br/>POST api/decisions/{trackingId}/human-decision
         Note over DE: raise_workflow_event → workflow resumes<br/>exactly where it paused
-        AP--)AP: Dapr pub/sub: escalation.resolved
         DE--)IN: Dapr pub/sub: item.status-changed (approved)
         DE--)PA: Dapr pub/sub: payment.requested
         PA--)IN: Dapr pub/sub: item.status-changed (paid)
     end
 
-    Note over IN,PA: reporting subscribes to every topic →<br/>dashboard metrics (F8) + audit trail per correlation id (F9)
+    Note over IN,PA: reporting subscribes to every topic<br/>(incl. escalation.resolved, published by approval) →<br/>dashboard metrics (F8) + audit trail per correlation id (F9)
 ```
 
 ### Payment flow — saga with compensation (Journey 4, INV-1012)
