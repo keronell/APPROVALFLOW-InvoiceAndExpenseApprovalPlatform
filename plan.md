@@ -25,7 +25,7 @@ intake ──item.submitted──▶ decision (Dapr Workflow orchestrator)
 | **decision** | per-item Dapr Workflow: PolicyEngine → MAF agent → Router → escalate/reject/auto-approve → hand to payment → publish events; enforces the ceiling (M12/F10/F4/F6) | workflow state, decision records |
 | **approval** | escalation queue with recommendation/confidence/cited rules; approve/reject/send-back in one action → raises workflow event; durable pause/resume (F4/F5/M11) | queue items (Redis) |
 | **payment** | saga: ReserveBudget → ExecutePayment → ConfirmPayment + ReleaseBudget compensation; per-department budget with ETag concurrency; idempotent (M9/M10) | budgets, reservations, payments (Redis) |
-| **notification** | subscribes final-outcome events; per-submitter inbox (M8) | notifications (Redis) |
+| **notification** | subscribes final-outcome events; per-submitter inbox (M8) — **NOT BUILT, see Open items** | notifications (Redis) |
 | **config** | serves/updates policy + thresholds via the Dapr config store; read fresh per item → change without redeploy (F7/M13) | policy + thresholds (Redis config store) |
 | **reporting** | subscribes all events; metrics + audit trail per correlation id (F8/F9) | aggregates + audit log (Redis) |
 
@@ -63,7 +63,7 @@ loop offline, used by CI and `tools/verify.py`.
 ## Repo layout
 
 ```
-services/{intake,decision,approval,payment,notification,config,reporting}/  # FastAPI + Dockerfile each
+services/{intake,decision,approval,payment,config,reporting}/  # FastAPI + Dockerfile each
 services/shared/     approvalflow_shared (contracts, correlation, logging, app factory)
 gateway/  ui/        nginx + React/Vite
 dapr/components/     pubsub (rabbitmq), statestore + configstore (redis), secretstore (env)
@@ -97,12 +97,30 @@ and CI is green. PR descriptions map to requirement IDs.
    ✅ done (PR #8)
 8. **`feat/hitl-approval`** — queue + `raise_event` + durable resume; **J2 green
    incl. restart**; canonical INV-1012 J4 + INV-1014A/B concurrency; full
-   verify.py in CI. ⏳ next
-9. **`feat/ui-dashboard`** — React UI + reporting + OpenAPI via gateway.
+   verify.py (8/8) in CI. ✅ done (PR #10)
+9. **`feat/ui-dashboard`** — React UI + reporting service + nginx gateway;
+   verify 9/9 incl. the gateway check. ✅ done (PR #11)
 10. **`docs/architecture`** — README, ARCHITECTURE.md diagrams, ADR +
-    PRODUCT-DILEMMA stubs.
+    PRODUCT-DILEMMA stubs. ⏳ in progress (diagrams landed on the
+    `docs/architecture` branch; ADR/PRODUCT-DILEMMA stubs pending)
 11. **Nice-to-haves**, each its own branch, priority order: N1 → N5 → N6 → N4 →
     N3 → N2 → B1 → B2 → B3. `main` stays demo-ready.
+
+## Open items (honest gaps)
+
+- **M8 — notification channel is partial.** The planned **notification service
+  (per-submitter inbox) was not built.** What exists today: intake returns an
+  immediate `202 + tracking id` (async ✅), final outcomes are delivered as
+  `item.status-changed` events consumed by intake, and the submitter sees the
+  result by polling `GET /api/invoices/{id}` (the UI does this automatically).
+  That is a **pull** channel, not a push notification. Either build the
+  notification service on its own branch (subscribe final-outcome events →
+  per-submitter inbox / SSE) or explicitly defend event-driven status +
+  polling as the notification channel in the README/ADR.
+- **Unused Dapr configuration component.** `dapr/components/configstore.yaml`
+  (`configuration.redis`) is defined but unused — thresholds live in the
+  *state store* and are served over service invocation. Wire it or remove it
+  before review.
 
 ## Verification (definition of done)
 
