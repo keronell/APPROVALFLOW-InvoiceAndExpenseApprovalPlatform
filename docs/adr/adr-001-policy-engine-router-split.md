@@ -1,6 +1,6 @@
 # ADR-001 — Deterministic policy engine + router, separated from the agent
 
-- Status: context drafted — decision/consequences pending (author)
+- Status: context drafted - decision/consequences pending (author)
 - Date: 2026-07-07
 
 ## Context

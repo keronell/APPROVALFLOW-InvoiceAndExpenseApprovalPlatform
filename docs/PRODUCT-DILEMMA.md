@@ -86,3 +86,10 @@ Factual observations (for the justification below to build on):
 ## Trade-off justification
 
 <!-- TODO -->
+
+## Future evolution
+
+Two candidate directions for evolving this posture beyond fixed numbers —
+history-driven threshold proposals and an LLM council for calibrated
+confidence — are documented in [FUTURE-WORK.md](FUTURE-WORK.md). Both keep the
+deterministic router as the only authority over money.
