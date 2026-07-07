@@ -21,7 +21,7 @@ Capstone for the **Microservice Architecture** and **AI Engineering** courses.
 - **Microsoft Agent Framework (Python)** — the decisioning agent (structured output only)
 - **Dapr 1.18** — service invocation, pub/sub, state, config, secrets, **Workflow** (saga + durable HITL)
 - **RabbitMQ** — message broker behind Dapr pub/sub
-- **Redis** — per-service state stores + Dapr configuration store
+- **Redis** — per-service Dapr state stores (thresholds served by the config service, runtime-changeable)
 - **nginx** — API gateway (single entry point, rate limiting) + serves the UI
 - **React + Vite** — minimal UI
 - **Ollama + Qwen** (default) / Groq / Gemini / deterministic stub — LLM provider, swappable by config
