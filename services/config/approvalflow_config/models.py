@@ -8,12 +8,18 @@ Unknown keys are rejected outright (extra="forbid").
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
 
 # Sanity cap for the autonomy ceiling: far above every per-category cap, far
 # below "unbounded". Raising it is a deliberate code change, not a config PUT.
 CEILING_HARD_CAP = Decimal("10000")
+
+# FX rates must be strictly positive: a 0 (or negative) rate would multiply
+# invoice totals down to $0/negative and slip under the receipt, FX hard-stop,
+# and autonomy-ceiling checks.
+PositiveRate = Annotated[Decimal, Field(gt=0)]
 
 
 class Thresholds(BaseModel):
@@ -30,4 +36,4 @@ class Thresholds(BaseModel):
     receipt_required_over_usd: Decimal = Field(ge=0)
     fx_hard_stop_usd: Decimal = Field(gt=0)
 
-    fx_rates: dict[str, Decimal]
+    fx_rates: dict[str, PositiveRate]

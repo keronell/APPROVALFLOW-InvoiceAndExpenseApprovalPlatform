@@ -91,6 +91,30 @@ async def test_failed_metrics_update_is_retried_by_redelivery():
     assert [e.topic for e in trail] == ["item.submitted"]  # no duplicate audit
 
 
+def test_legacy_flat_metrics_document_is_migrated():
+    """Upgrading must not reset existing dashboards: a pre-MetricsState flat
+    Metrics document is preserved by _load_state, both on read and as the
+    base for the next update."""
+    from approvalflow_reporting.app import DaprReportStore
+
+    legacy = {"submitted": 7, "auto_approved": 3, "paid": 2, "auto_approved_usd": "321.00"}
+
+    state = DaprReportStore._load_state(legacy)
+    assert state.metrics.submitted == 7
+    assert state.metrics.auto_approved == 3
+    assert state.metrics.auto_approved_usd == "321.00"
+    assert state.applied == []  # legacy docs had no applied-key record
+
+    # The new shape round-trips unchanged.
+    new_shape = {"metrics": legacy, "applied": ["item.submitted::t9"]}
+    state = DaprReportStore._load_state(new_shape)
+    assert state.metrics.submitted == 7
+    assert state.applied == ["item.submitted::t9"]
+
+    # And an empty store starts fresh.
+    assert DaprReportStore._load_state(None).metrics.submitted == 0
+
+
 def test_redelivered_event_does_not_double_count(client):
     """M10: at-least-once delivery must not inflate counters or duplicate
     audit entries — the idempotent writes drop redeliveries."""

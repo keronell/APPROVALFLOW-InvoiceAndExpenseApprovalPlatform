@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 from decimal import Decimal
 from enum import IntEnum, StrEnum
+from typing import Annotated
 
 from approvalflow_shared.contracts import ExpenseCategory, ItemStatus, Route
 from pydantic import BaseModel, ConfigDict, Field
@@ -34,8 +35,13 @@ class PolicyFinding(BaseModel):
 class AutonomyThresholds(BaseModel):
     """Tunable policy numbers (policy.md §6 defaults).
 
-    In production these are served from the Dapr configuration store so they
-    change without a redeploy (F7/M13). The defaults here match policy.md.
+    In production these are served by the config service so they change
+    without a redeploy (F7/M13). The defaults here match policy.md.
+
+    FX rates are validated strictly positive here too (defense in depth —
+    the config service is the mutation gate): if a poisoned value ever
+    reaches the decision service, validation fails and `fetch_thresholds`
+    falls back to these safe defaults instead of converting totals to $0.
     """
 
     ceiling_usd: Decimal = Decimal("250")
@@ -49,7 +55,7 @@ class AutonomyThresholds(BaseModel):
     receipt_required_over_usd: Decimal = Decimal("25")
     fx_hard_stop_usd: Decimal = Decimal("1000")
 
-    fx_rates: dict[str, Decimal] = Field(
+    fx_rates: dict[str, Annotated[Decimal, Field(gt=0)]] = Field(
         default_factory=lambda: {
             "USD": Decimal("1"),
             "EUR": Decimal("1.08"),

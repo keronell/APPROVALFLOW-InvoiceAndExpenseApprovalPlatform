@@ -69,9 +69,12 @@ def test_mutation_disabled_when_no_token_configured(monkeypatch):
         {"min_confidence": -0.1},
         {"saas_monthly_cap_usd": "0"},  # non-positive category cap
         {"totally_unknown_knob": 1},    # unknown keys are rejected
+        {"fx_rates": {"USD": "0"}},     # zero FX rate would convert totals to $0
+        {"fx_rates": {"EUR": "-1.08"}},  # negative FX rate
     ],
     ids=["negative-ceiling", "ceiling-over-cap", "confidence-gt-1",
-         "confidence-negative", "zero-category-cap", "unknown-key"],
+         "confidence-negative", "zero-category-cap", "unknown-key",
+         "zero-fx-rate", "negative-fx-rate"],
 )
 def test_invalid_values_are_rejected(client, patch):
     resp = client.put("/config/thresholds", json=patch, headers=AUTH)

@@ -56,9 +56,20 @@ class DaprReportStore:
     def __init__(self, dapr: DaprIO) -> None:
         self._dapr = dapr
 
+    @staticmethod
+    def _load_state(value: object | None) -> MetricsState:
+        """Parse the stored document, migrating the pre-MetricsState flat
+        `Metrics` shape so an upgrade never resets existing counters."""
+        if value is None:
+            return MetricsState()
+        if isinstance(value, dict) and "metrics" in value:
+            return MetricsState.model_validate(value)
+        # Legacy flat Metrics document (no `metrics` wrapper): preserve it.
+        return MetricsState(metrics=Metrics.model_validate(value), applied=[])
+
     async def get_metrics(self) -> Metrics:
         value = await self._dapr.get_state(STATE_STORE, METRICS_KEY)
-        return MetricsState.model_validate(value).metrics if value else Metrics()
+        return self._load_state(value).metrics
 
     async def _conditional_save(self, key: str, value: object, etag: str | None) -> bool:
         """First write of a key uses atomic insert; later writes are
@@ -73,7 +84,7 @@ class DaprReportStore:
         # itself commit together.
         for _ in range(self._RETRIES):
             value, etag = await self._dapr.get_state_and_etag(STATE_STORE, METRICS_KEY)
-            state = MetricsState.model_validate(value) if value else MetricsState()
+            state = self._load_state(value)
             if event_key in state.applied:
                 return
             mutate(state.metrics)
