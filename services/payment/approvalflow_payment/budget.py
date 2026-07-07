@@ -62,6 +62,11 @@ class BudgetLedger:
         self._retries = retries
 
     async def reserve(self, tracking_id: str, department: str, amount: Decimal) -> ReserveResult:
+        # Defense in depth (contracts already forbid non-positive totals): a
+        # negative reservation would INCREASE the budget on this subtraction.
+        if amount <= 0:
+            return ReserveResult(ok=False, reason="non-positive amount")
+
         # Idempotent: an existing reservation means this was already handled.
         existing = await self._store.get_reservation(tracking_id)
         active = (ReservationStatus.RESERVED, ReservationStatus.CONFIRMED)

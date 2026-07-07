@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from approvalflow_shared.contracts import InvoiceSubmission, Route
+from pydantic import ValidationError
 
 FIXTURES_PATH = Path(__file__).parents[2] / "Examples" / "sample-invoices.json"
 
@@ -36,6 +37,28 @@ def test_fingerprint_differs_when_total_differs() -> None:
     a = InvoiceSubmission.model_validate(fixtures["INV-1014A"])
     b = InvoiceSubmission.model_validate(fixtures["INV-1014B"])
     assert a.fingerprint != b.fingerprint
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"total": -10.0},
+        {"total": 0},
+        {"taxAmount": -1.0},
+        {"attendees": 0},
+        {"lineItems": [{"description": "x", "quantity": -1, "unitPrice": 10}]},
+        {"lineItems": [{"description": "x", "quantity": 1, "unitPrice": -5}]},
+    ],
+    ids=["negative-total", "zero-total", "negative-tax", "zero-attendees",
+         "negative-quantity", "negative-unit-price"],
+)
+def test_non_positive_money_values_are_rejected(patch: dict) -> None:
+    """A negative invoice must never enter the pipeline: it would pass under
+    every ceiling/receipt check and a negative reservation would INCREASE the
+    department budget."""
+    fixture = {**load_fixtures()[0], **patch}
+    with pytest.raises(ValidationError):
+        InvoiceSubmission.model_validate(fixture)
 
 
 def test_camel_case_round_trip() -> None:
