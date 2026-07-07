@@ -52,21 +52,21 @@ MetricsMutation = Callable[[Metrics], None]
 
 @runtime_checkable
 class ReportStore(Protocol):
-    async def claim_event(self, event_key: str) -> bool:
-        """Atomically claim an event key; False if it was already processed.
-        This is the at-least-once dedupe: a redelivered event must not inflate
-        counters or duplicate audit entries (M10)."""
-        ...
+    """At-least-once safety contract: dedupe is recorded atomically WITH each
+    write (never as a separate pre-claim), so a crash before the write lets the
+    redelivery retry, and a redelivery after the write is a no-op (M10)."""
 
     async def get_metrics(self) -> Metrics: ...
 
-    async def update_metrics(self, mutate: MetricsMutation) -> None:
-        """Apply ``mutate`` to the current metrics atomically. Implementations
-        must re-read and re-apply on write conflicts so concurrent events never
-        lose each other's updates."""
+    async def update_metrics(self, event_key: str, mutate: MetricsMutation) -> None:
+        """Apply ``mutate`` exactly once per ``event_key``. The applied-key
+        record must be persisted in the same atomic write as the metrics."""
         ...
 
-    async def append_audit(self, tracking_id: str, entry: AuditEntry) -> None: ...
+    async def append_audit(self, tracking_id: str, entry: AuditEntry) -> None:
+        """Idempotent per (tracking_id, entry.topic): appending a topic that is
+        already in the trail is a no-op."""
+        ...
 
     async def get_audit(self, tracking_id: str) -> list[AuditEntry]: ...
 
@@ -75,22 +75,22 @@ class InMemoryReportStore:
     def __init__(self) -> None:
         self._metrics = Metrics()
         self._audit: dict[str, list[AuditEntry]] = {}
-        self._seen: set[str] = set()
-
-    async def claim_event(self, event_key: str) -> bool:
-        if event_key in self._seen:
-            return False
-        self._seen.add(event_key)
-        return True
+        self._applied: set[str] = set()
 
     async def get_metrics(self) -> Metrics:
         return self._metrics
 
-    async def update_metrics(self, mutate: MetricsMutation) -> None:
+    async def update_metrics(self, event_key: str, mutate: MetricsMutation) -> None:
+        if event_key in self._applied:
+            return
         mutate(self._metrics)
+        self._applied.add(event_key)
 
     async def append_audit(self, tracking_id: str, entry: AuditEntry) -> None:
-        self._audit.setdefault(tracking_id, []).append(entry)
+        trail = self._audit.setdefault(tracking_id, [])
+        if any(e.topic == entry.topic for e in trail):
+            return
+        trail.append(entry)
 
     async def get_audit(self, tracking_id: str) -> list[AuditEntry]:
         return self._audit.get(tracking_id, [])
@@ -108,16 +108,15 @@ class ReportingService:
         tracking_id = payload.get("trackingId") or payload.get("tracking_id") or "unknown"
 
         # Each business topic legitimately fires at most once per item, so
-        # (topic, tracking id) identifies the event. A pub/sub redelivery
-        # loses this claim and is dropped before touching audit or metrics.
-        if not await self._store.claim_event(f"{topic}::{tracking_id}"):
-            log.info("event_redelivery_ignored", topic=topic, tracking_id=tracking_id)
-            return
-
+        # (topic, tracking id) identifies the event. Both writes below are
+        # idempotent per event and record their dedupe atomically with the
+        # write itself — a crash between them (or before either) simply lets
+        # the pub/sub redelivery retry; nothing is ever marked "seen" first
+        # and then lost.
         await self._store.append_audit(tracking_id, AuditEntry(topic=topic, payload=payload))
-        # The mutation is applied inside the store's conflict-retry loop, so a
-        # concurrent event's increments are never overwritten.
-        await self._store.update_metrics(lambda m: _apply(m, topic, payload))
+        await self._store.update_metrics(
+            f"{topic}::{tracking_id}", lambda m: _apply(m, topic, payload)
+        )
 
     async def summary(self) -> dict:
         metrics = await self._store.get_metrics()

@@ -9,6 +9,7 @@ from approvalflow_shared.daprio import DaprIO
 from approvalflow_shared.logging import get_logger
 from approvalflow_shared.web import create_app
 from fastapi import Request
+from pydantic import BaseModel, Field
 
 from .service import (
     METRICS_KEY,
@@ -31,22 +32,33 @@ _TOPICS = [
 ]
 
 
+class MetricsState(BaseModel):
+    """Metrics + the applied event keys, persisted as ONE document so the
+    dedupe record commits in the same atomic write as the aggregate — a crash
+    can never mark an event applied without its effect (and vice versa)."""
+
+    metrics: Metrics = Field(default_factory=Metrics)
+    applied: list[str] = Field(default_factory=list)
+
+
+# Keep the applied-key window bounded; a redelivery arriving after 1000
+# subsequent events is beyond RabbitMQ's practical redelivery horizon here.
+_APPLIED_CAP = 1000
+
+
 class DaprReportStore:
-    """Claims are atomic inserts; list/metric writes are ETag-conditional and
-    retried, so concurrent events neither double count nor overwrite each
-    other's updates."""
+    """Writes are idempotent per event and ETag-conditional with retry, so
+    concurrent events neither double count nor overwrite each other's updates,
+    and a redelivery after a crash retries the whole write (no pre-claim)."""
 
     _RETRIES = 8
 
     def __init__(self, dapr: DaprIO) -> None:
         self._dapr = dapr
 
-    async def claim_event(self, event_key: str) -> bool:
-        return await self._dapr.try_insert_state(STATE_STORE, f"seen::{event_key}", 1)
-
     async def get_metrics(self) -> Metrics:
         value = await self._dapr.get_state(STATE_STORE, METRICS_KEY)
-        return Metrics.model_validate(value) if value else Metrics()
+        return MetricsState.model_validate(value).metrics if value else Metrics()
 
     async def _conditional_save(self, key: str, value: object, etag: str | None) -> bool:
         """First write of a key uses atomic insert; later writes are
@@ -55,16 +67,19 @@ class DaprReportStore:
             return await self._dapr.try_insert_state(STATE_STORE, key, value)
         return await self._dapr.try_save_state(STATE_STORE, key, value, etag=etag)
 
-    async def update_metrics(self, mutate) -> None:
-        # Full read-modify-write inside the retry loop: on a conflict we
-        # re-read the fresh aggregate and re-apply the mutation, so a
-        # concurrent event's increments are never overwritten.
+    async def update_metrics(self, event_key: str, mutate) -> None:
+        # Full read-modify-write inside the retry loop; the applied-key check
+        # rides in the same document, so "already counted" and the count
+        # itself commit together.
         for _ in range(self._RETRIES):
             value, etag = await self._dapr.get_state_and_etag(STATE_STORE, METRICS_KEY)
-            metrics = Metrics.model_validate(value) if value else Metrics()
-            mutate(metrics)
+            state = MetricsState.model_validate(value) if value else MetricsState()
+            if event_key in state.applied:
+                return
+            mutate(state.metrics)
+            state.applied = (state.applied + [event_key])[-_APPLIED_CAP:]
             if await self._conditional_save(
-                METRICS_KEY, metrics.model_dump(mode="json"), etag
+                METRICS_KEY, state.model_dump(mode="json"), etag
             ):
                 return
         raise RuntimeError("could not persist metrics after retries")
@@ -74,6 +89,10 @@ class DaprReportStore:
         for _ in range(self._RETRIES):
             trail, etag = await self._dapr.get_state_and_etag(STATE_STORE, key)
             trail = list(trail or [])  # type: ignore[arg-type]
+            # Idempotent per (tracking id, topic): the dedupe check runs against
+            # the same snapshot the conditional write commits.
+            if any(e.get("topic") == entry.topic for e in trail):
+                return
             trail.append(entry.model_dump(mode="json"))
             if await self._conditional_save(key, trail, etag):
                 return

@@ -47,12 +47,12 @@ class InboxStore(Protocol):
 
     async def get_ref(self, tracking_id: str) -> ItemRef | None: ...
 
-    async def claim(self, key: str) -> bool:
-        """Atomic claim for at-least-once dedupe: one notification per
-        (item, terminal status), even under redelivery/concurrency (M10)."""
+    async def append(self, submitter: str, notification: Notification) -> None:
+        """Idempotent per (tracking_id, status): the dedupe must commit in the
+        same atomic write as the inbox entry — never as a separate pre-claim,
+        so a failed append can be retried by the redelivery and a redelivery
+        after a successful append is a no-op (M10)."""
         ...
-
-    async def append(self, submitter: str, notification: Notification) -> None: ...
 
     async def inbox(self, submitter: str) -> list[Notification]: ...
 
@@ -61,7 +61,6 @@ class InMemoryInboxStore:
     def __init__(self) -> None:
         self._refs: dict[str, ItemRef] = {}
         self._inboxes: dict[str, list[Notification]] = {}
-        self._claims: set[str] = set()
 
     async def put_ref(self, tracking_id: str, ref: ItemRef) -> None:
         self._refs[tracking_id] = ref
@@ -69,14 +68,14 @@ class InMemoryInboxStore:
     async def get_ref(self, tracking_id: str) -> ItemRef | None:
         return self._refs.get(tracking_id)
 
-    async def claim(self, key: str) -> bool:
-        if key in self._claims:
-            return False
-        self._claims.add(key)
-        return True
-
     async def append(self, submitter: str, notification: Notification) -> None:
-        self._inboxes.setdefault(submitter, []).append(notification)
+        inbox = self._inboxes.setdefault(submitter, [])
+        if any(
+            n.tracking_id == notification.tracking_id and n.status == notification.status
+            for n in inbox
+        ):
+            return
+        inbox.append(notification)
 
     async def inbox(self, submitter: str) -> list[Notification]:
         return sorted(
@@ -102,10 +101,9 @@ class NotificationService:
             # status event for an item we never saw submitted — nothing to address.
             log.warning("notification_for_unknown_item", tracking_id=event.tracking_id)
             return
-        # Idempotent on redelivery: an atomic claim per (item, terminal status),
-        # race-safe unlike scanning the inbox read-modify-write style.
-        if not await self._store.claim(f"notified::{event.tracking_id}::{event.status}"):
-            return
+        # Idempotent on redelivery: append() dedupes per (item, terminal
+        # status) atomically with the inbox write itself — a failed append is
+        # retried by the redelivery; a successful one makes it a no-op.
         await self._store.append(
             ref.submitter,
             Notification(

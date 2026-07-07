@@ -75,3 +75,41 @@ def test_empty_inbox_for_unknown_submitter(client):
     assert client.get(
         "/api/notifications", params={"submitter": "nobody@northwind.example"}
     ).json() == []
+
+
+class FlakyInboxStore(InMemoryInboxStore):
+    """Fails the first inbox append — models a crash mid-delivery."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_next_append = True
+
+    async def append(self, submitter, notification) -> None:
+        if self.fail_next_append:
+            self.fail_next_append = False
+            raise RuntimeError("transient store failure")
+        await super().append(submitter, notification)
+
+
+@pytest.mark.anyio
+async def test_failed_append_is_retried_by_redelivery(fixtures_by_id):
+    """The dedupe must not be recorded before the write: if the append fails,
+    the handler errors (Dapr redelivers) and the redelivery MUST deliver the
+    notification — not find a stale 'seen' marker and drop it."""
+    from approvalflow_shared.contracts import InvoiceSubmission, ItemStatus, ItemSubmitted
+    from approvalflow_shared.contracts import StatusChanged as SC
+
+    store = FlakyInboxStore()
+    service = NotificationService(store)
+    invoice = InvoiceSubmission.model_validate(fixtures_by_id["INV-1001"])
+    await service.on_item_submitted(
+        ItemSubmitted(tracking_id="t-1", correlation_id="t-1", invoice=invoice)
+    )
+    event = SC(tracking_id="t-1", correlation_id="t-1", status=ItemStatus.PAID, reason="done")
+
+    with pytest.raises(RuntimeError):  # first delivery crashes mid-append
+        await service.on_status_changed(event)
+    await service.on_status_changed(event)  # pub/sub redelivery
+
+    inbox = await service.inbox(invoice.submitter)
+    assert len(inbox) == 1  # delivered exactly once, not zero, not two

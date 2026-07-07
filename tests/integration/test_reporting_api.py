@@ -59,9 +59,41 @@ def test_unknown_item_has_empty_trail(client):
     assert client.get("/api/audit/nope").json() == []
 
 
+class FlakyReportStore(InMemoryReportStore):
+    """Fails the first metrics update — models a crash after the audit write."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_next_update = True
+
+    async def update_metrics(self, event_key, mutate) -> None:
+        if self.fail_next_update:
+            self.fail_next_update = False
+            raise RuntimeError("transient store failure")
+        await super().update_metrics(event_key, mutate)
+
+
+@pytest.mark.anyio
+async def test_failed_metrics_update_is_retried_by_redelivery():
+    """No pre-claim: a crash after the audit append but before the metrics
+    write must leave the event retryable — the redelivery completes the count
+    (and the audit append stays idempotent, so no duplicate entry either)."""
+    service = ReportingService(FlakyReportStore())
+    payload = {"trackingId": "t1"}
+
+    with pytest.raises(RuntimeError):  # first delivery crashes mid-record
+        await service.record("item.submitted", payload)
+    await service.record("item.submitted", payload)  # pub/sub redelivery
+
+    summary = await service.summary()
+    assert summary["submitted"] == 1  # counted exactly once, not zero
+    trail = await service.audit_trail("t1")
+    assert [e.topic for e in trail] == ["item.submitted"]  # no duplicate audit
+
+
 def test_redelivered_event_does_not_double_count(client):
     """M10: at-least-once delivery must not inflate counters or duplicate
-    audit entries — the (topic, tracking id) claim drops redeliveries."""
+    audit entries — the idempotent writes drop redeliveries."""
     _event(client, "item.submitted", "t1")
     _event(client, "item.submitted", "t1")  # pub/sub redelivery
     _event(client, "decision.made", "t1", route="auto_approve", usdAmount="42.00")
