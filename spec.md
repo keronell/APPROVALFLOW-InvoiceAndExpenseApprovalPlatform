@@ -130,7 +130,7 @@ Kept at `policy.md` §6 defaults; the shipped fixtures are labeled against them:
 Auto-approve iff: amount ≤ ceiling AND confidence ≥ threshold AND
 category-compliant AND no hard stop. Otherwise human_review (or reject for a
 high-severity violation, duplicate for a re-submission). All numbers live in the
-Dapr config store (changeable without redeploy). If tuned, re-label the fixtures
+config service (changeable at runtime without redeploy). If tuned, re-label the fixtures
 and justify in `docs/PRODUCT-DILEMMA.md`.
 
 ## Constraints

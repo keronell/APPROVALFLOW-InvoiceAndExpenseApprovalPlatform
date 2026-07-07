@@ -37,9 +37,11 @@ sidecar in docker-compose, sharing the network namespace):
   `payment_workflow` (the saga of ADR-002). This building block is the reason
   the compose file runs `placement` and `scheduler`.
 
-Known wart to address either way: `dapr/components/configstore.yaml`
-(`configuration.redis`) is defined but **unused** — thresholds live in the
-state store and are served over service invocation (see plan.md Open items).
+One deliberate simplification: Dapr's *configuration* building block is not
+used. Thresholds live in the state store and are served over service
+invocation by the config service (runtime-changeable via
+`PUT /config/thresholds`, F7/M13). An unused `configuration.redis` component
+briefly existed and was removed to keep components honest.
 
 ## Decision
 

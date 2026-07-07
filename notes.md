@@ -16,8 +16,8 @@ plus operating constraints and things worth remembering. `spec.md` = what;
 | **LLM provider (live)** | **Ollama + Qwen** (`qwen2.5:3b`) | Free and local. Ships as a compose container **by default**, with a **host-Ollama override** via one `.env` value (`LLM_BASE_URL` → `host.docker.internal:11434/v1`) for GPU speed. |
 | **LLM provider (CI / verify)** | **Deterministic stub** | `LLM_PROVIDER=stub` — a real MAF `BaseChatClient` that runs the true agent loop offline. No network, no rate limits. Provider stays swappable to Groq/Gemini (all OpenAI-compatible). |
 | **Message broker** | **RabbitMQ** | A real queue in compose — satisfies the MSA "queue" requirement explicitly; management UI helps the demo. |
-| **State / config store** | **Redis** | Per-service state stores (per-app key prefix; no cross-service reads) + Dapr configuration store for thresholds. |
-| **Autonomy posture** | **Keep `policy.md` §6 defaults: $250 ceiling, 0.80 confidence** | The shipped fixtures are labeled against these numbers. If tuned, re-label the fixtures and justify in `docs/PRODUCT-DILEMMA.md`. Numbers live in the Dapr config store (F7/M13). |
+| **State / config store** | **Redis** | Per-service Dapr state stores (per-app key prefix; no cross-service reads); thresholds live in the config service's state, served over service invocation. |
+| **Autonomy posture** | **Keep `policy.md` §6 defaults: $250 ceiling, 0.80 confidence** | The shipped fixtures are labeled against these numbers. If tuned, re-label the fixtures and justify in `docs/PRODUCT-DILEMMA.md`. Numbers are served by the config service, runtime-changeable (F7/M13). |
 
 ## Hard constraints
 

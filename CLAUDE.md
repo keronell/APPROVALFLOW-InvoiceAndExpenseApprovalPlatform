@@ -32,7 +32,8 @@ tests green: `tests/unit/test_router.py`, `tests/unit/test_fixtures_expected_rou
   (`Agent` not `ChatAgent`, `AgentSession` not `AgentThread`). Verify the
   installed surface before coding against it; the `agent/__init__.py` guard
   fails loudly if MAF drops an expected symbol.
-- Dapr 1.18 — pub/sub (RabbitMQ), state + config (Redis), secrets, Workflow
+- Dapr 1.18 — pub/sub (RabbitMQ), state (Redis; thresholds served by the config
+  service over invocation), secrets, Workflow
 - nginx gateway · React+Vite UI
 - LLM provider is one config value (`LLM_PROVIDER`): `stub` | `ollama` | `groq`
   | `gemini` | `openai`. **CI and `tools/verify.py` always use `stub`** — a real
