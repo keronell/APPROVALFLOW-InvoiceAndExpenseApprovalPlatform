@@ -80,6 +80,7 @@ services:
       dockerfile: services/config/Dockerfile
     environment:
       DAPR_HTTP_PORT: "3500"
+      CONFIG_API_TOKEN: "${CONFIG_API_TOKEN:-approvalflow-dev-config-token}"
     ports:
       - "8003:8000"
     healthcheck:
