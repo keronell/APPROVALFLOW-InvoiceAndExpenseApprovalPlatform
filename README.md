@@ -10,9 +10,10 @@ via one correlation id.
 Capstone for the **Microservice Architecture** and **AI Engineering** courses.
 
 > 🚧 Work in progress — built in staged pull requests. See the PR history for the
-> requirement-by-requirement trail. Current: journeys 1 (auto-approve→paid),
-> 3 (duplicate) and 4 (payment failure + compensation) are green end-to-end via
-> `tools/verify.py`; journey 2 (escalate-and-resume) lands with the HITL stage.
+> requirement-by-requirement trail. Current: **all four worked journeys are green
+> end-to-end** via `tools/verify.py` (9/9): auto-approve→paid, escalate-and-resume
+> (surviving a decision-service restart), duplicate short-circuit, and payment
+> failure + compensation — plus the anti-cheese guards and the gateway check.
 
 ## Tech stack
 
@@ -53,9 +54,88 @@ ruff check .
 pytest
 ```
 
-## System diagram
+## System diagrams
 
-_To be added with the architecture documentation stage (see `docs/ARCHITECTURE.md`)._
+Canonical source: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — the blocks
+below are copied **verbatim** from there (edit there first, then re-copy, so
+the two can never drift apart).
+
+### Journeys 1 & 2 — submit → decide → (auto-approve | escalate-and-resume)
+
+<!-- diagram source of truth: docs/ARCHITECTURE.md — copied verbatim into README.md -->
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Submitter
+    actor Approver
+    participant GW as Gateway (nginx :8080)
+    participant IN as Intake
+    participant DE as Decision (Dapr Workflow)
+    participant CF as Config
+    participant AP as Approval
+    participant PA as Payment
+
+    Submitter->>GW: POST /api/invoices
+    Note over GW: nginx rate-limit (limit_req)<br/>mints/propagates X-Correlation-Id
+    GW->>IN: proxy /api/invoices
+    Note over IN: Dapr state store: fingerprint claim (fp::)<br/>+ idempotency key (idem::) — GLOBAL-DUP / M10
+    IN-->>Submitter: 202 Accepted + trackingId
+    IN--)DE: Dapr pub/sub (RabbitMQ): item.submitted
+    Note over DE: Dapr Workflow: schedule decision_workflow<br/>(instance id = tracking id → redelivered events start nothing)
+    DE->>CF: Dapr service invocation: GET config/thresholds
+    CF-->>DE: thresholds ($250 ceiling, 0.80 confidence)
+    Note over DE: if the invoke fails or returns nothing, DE falls back<br/>client-side to hardcoded defaults ($250/0.80) — config_client.py,<br/>logged as thresholds_fetch_failed, never crashes
+    Note over DE: PolicyEngine (deterministic) + MAF agent (advisory)<br/>→ deterministic router decides (M12/F10)
+    DE->>DE: Dapr state store: save decision::{trackingId} (audit, F9)
+    DE--)IN: Dapr pub/sub: item.status-changed
+
+    alt route = auto_approve — Journey 1 (INV-1001)
+        DE--)PA: Dapr pub/sub: payment.requested
+        Note over PA: payment saga — see payment-flow diagram
+        PA--)IN: Dapr pub/sub: item.status-changed (paid)
+        Submitter->>GW: GET /api/invoices/{trackingId}
+        GW->>IN: proxy
+        IN-->>Submitter: status paid + plain-language reason (F2)
+    else route = human_review — Journey 2 (INV-1003)
+        DE--)AP: Dapr pub/sub: escalation.requested<br/>(recommendation, confidence, cited rules — F4)
+        Note over DE: Dapr Workflow: wait_for_external_event("HumanDecision")<br/>durable pause in the state store —<br/>survives a decision-service restart (M11)
+        Approver->>GW: POST /api/approvals/{trackingId}/decision (one action — F5)
+        GW->>AP: proxy
+        AP->>DE: Dapr service invocation:<br/>POST api/decisions/{trackingId}/human-decision
+        Note over DE: raise_workflow_event → workflow resumes<br/>exactly where it paused
+        DE--)IN: Dapr pub/sub: item.status-changed (approved)
+        DE--)PA: Dapr pub/sub: payment.requested
+        PA--)IN: Dapr pub/sub: item.status-changed (paid)
+    end
+
+    Note over IN,PA: reporting subscribes to every topic<br/>(incl. escalation.resolved, published by approval) →<br/>dashboard metrics (F8) + audit trail per correlation id (F9)
+```
+
+### Payment flow — saga with compensation (Journey 4, INV-1012)
+
+<!-- diagram source of truth: docs/ARCHITECTURE.md — copied verbatim into README.md -->
+```mermaid
+flowchart TD
+    REQ["Dapr pub/sub: payment.requested consumed<br/>payment_workflow scheduled<br/>(instance id = tracking id — idempotent, M10)"]
+    RES["1 reserve_activity → BudgetLedger.reserve()<br/>Dapr state store: budget::{department} decrement<br/>ETag first-write concurrency, retried on conflict (M9)"]
+    PAY["2 pay_activity → provider.execute_payment()<br/>idempotent via payment::{trackingId}"]
+    CON["3 confirm_activity → BudgetLedger.confirm()<br/>reservation → CONFIRMED (budget unchanged)"]
+    DONE["4 complete_activity<br/>Dapr pub/sub: payment.completed<br/>+ item.status-changed (paid)"]
+    REL["COMPENSATION<br/>release_activity → BudgetLedger.release()<br/>budget restored, reservation → RELEASED<br/>no orphaned reservation"]
+    FAIL["fail_activity → _mark_failed()<br/>Dapr pub/sub: payment.failed<br/>+ item.status-changed (payment_failed)"]
+
+    REQ --> RES
+    RES -->|reserved| PAY
+    RES -->|"insufficient budget<br/>(nothing reserved — no rollback needed)"| FAIL
+    PAY -->|payment id| CON
+    PAY -->|"PaymentDeclined<br/>(Journey 4: INV-1012 test.failPayment)"| REL
+    REL --> FAIL
+    CON --> DONE
+
+    style REL fill:#7f1d1d,color:#fff
+    style FAIL fill:#7f1d1d,color:#fff
+    style DONE fill:#14532d,color:#fff
+```
 
 ## Repository layout
 
