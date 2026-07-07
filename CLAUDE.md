@@ -97,6 +97,10 @@ installs it.
 
 ## Git workflow (this is graded — D3)
 
+- **Never push a commit without a PR.** Every change — code or docs, however
+  small — lands on a feature branch and goes through a pull request. Agents
+  open the PR and stop there: **the owner reviews and merges.** No direct
+  commits to `main`, no self-merges.
 - GitHub Flow: one stage = one feature branch = one PR, merged to a green `main`.
 - Small conventional commits (`feat:`, `test:`, `docs:`, `ci:`); commit tests
   with the code they cover. PR descriptions map to requirement IDs (F/M/N/B/D).
