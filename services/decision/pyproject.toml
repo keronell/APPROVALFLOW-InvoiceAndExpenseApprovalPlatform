@@ -6,7 +6,12 @@ requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.7",
     "approvalflow-shared",
-    "agent-framework>=1.10",
+    # Deliberately NOT the agent-framework meta package: it expands to
+    # agent-framework-core[all], whose beta/rc extras (github-copilot, ...)
+    # make a fresh, unconstrained resolve backtrack until pip gives up
+    # (resolution-too-deep). We only use core symbols + the OpenAI client.
+    "agent-framework-core>=1.10,<1.11",
+    "agent-framework-openai>=1.10,<1.11",
     "dapr>=1.15",
     "dapr-ext-workflow>=1.15",
     "fastapi>=0.111",
