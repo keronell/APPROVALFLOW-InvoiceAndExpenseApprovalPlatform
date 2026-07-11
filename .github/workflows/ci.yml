@@ -1,5 +1,6 @@
-# CI quality gates on every push (M16/M17).
-# Later stages extend this with the compose-up verification job (D5).
+# CI quality gates on every push (M16/M17) + compose-up verification (D5).
+# On a green main, the publish job builds and pushes every deployable image
+# to GHCR (N2) — no manual release step.
 
 name: CI
 
@@ -38,3 +39,108 @@ jobs:
         env:
           LLM_PROVIDER: stub
         run: python tools/verify.py --down
+
+  publish:
+    # CD (N2): once the CI quality gates pass on main, build and push every
+    # deployable image to GHCR — no manual release step. PR-side image builds
+    # are already exercised by the verify job (docker compose builds them all).
+    #
+    # Each matrix leg pushes ONLY the immutable commit-SHA tag. The mutable
+    # `latest` tags are promoted by the follow-up `promote` job, and only after
+    # the entire matrix succeeded — so a failed or cancelled leg can never
+    # leave `latest` pointing at a mixed-version release.
+    needs: [quality-gates, verify]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - name: config
+            dockerfile: services/config/Dockerfile
+          - name: intake
+            dockerfile: services/intake/Dockerfile
+          - name: decision
+            dockerfile: services/decision/Dockerfile
+          - name: payment
+            dockerfile: services/payment/Dockerfile
+          - name: approval
+            dockerfile: services/approval/Dockerfile
+          - name: reporting
+            dockerfile: services/reporting/Dockerfile
+          - name: notification
+            dockerfile: services/notification/Dockerfile
+          - name: gateway
+            dockerfile: gateway/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # GHCR requires a lowercase image name; the repo owner may not be.
+      - name: Compute lowercase image owner
+        id: owner
+        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ghcr.io/${{ steps.owner.outputs.owner }}/approvalflow-${{ matrix.name }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+  promote:
+    # Promote `latest` only after EVERY image pushed successfully, so the
+    # documented latest tags always describe one tested commit, never a mix.
+    #
+    # Two guards against concurrent publishes racing each other on main:
+    #   - the concurrency group serializes promotions (no two promote jobs
+    #     retag at the same time; a superseded queued run is dropped);
+    #   - the head-of-main check skips promotion when a newer commit has
+    #     landed, so a slow older run can never move `latest` backward.
+    needs: publish
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: ghcr-promote-latest
+      cancel-in-progress: false
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Skip if this commit is no longer the head of main
+        id: head
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          head=$(gh api "repos/${GITHUB_REPOSITORY}/branches/main" --jq '.commit.sha')
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "main is now at $head (this run built $GITHUB_SHA); skipping latest promotion."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Promote all images to latest
+        if: steps.head.outputs.skip != 'true'
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          for name in config intake decision payment approval reporting notification gateway; do
+            docker buildx imagetools create \
+              -t "ghcr.io/${owner}/approvalflow-${name}:latest" \
+              "ghcr.io/${owner}/approvalflow-${name}:${GITHUB_SHA}"
+          done
