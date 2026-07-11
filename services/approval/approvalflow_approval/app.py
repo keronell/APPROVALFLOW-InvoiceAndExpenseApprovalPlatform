@@ -6,6 +6,7 @@ import asyncio
 import os
 from typing import Protocol, runtime_checkable
 
+from approvalflow_shared.auth import require_role
 from approvalflow_shared.contracts import (
     EscalationRequested,
     EscalationResolved,
@@ -15,7 +16,7 @@ from approvalflow_shared.contracts import (
 from approvalflow_shared.daprio import DaprIO
 from approvalflow_shared.logging import get_logger
 from approvalflow_shared.web import create_app
-from fastapi import HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 
 from .store import InMemoryQueueStore, QueueItem, QueueItemStatus, QueueStore
 
@@ -96,7 +97,11 @@ def build_app(store: QueueStore | None = None, gateway: DecisionGateway | None =
             log.info("escalation_queued", tracking_id=escalation.tracking_id)
         return {"status": "SUCCESS"}
 
-    @app.get("/api/approvals", tags=["approval"])
+    @app.get(
+        "/api/approvals",
+        tags=["approval"],
+        dependencies=[Depends(require_role("approver"))],
+    )
     async def list_queue(status: str = "pending") -> list[QueueItem]:
         """The approver's queue — only escalated items, with the agent's
         recommendation, confidence, and cited rules (F4)."""
@@ -105,7 +110,11 @@ def build_app(store: QueueStore | None = None, gateway: DecisionGateway | None =
             return items
         return [i for i in items if i.status == status]
 
-    @app.post("/api/approvals/{tracking_id}/decision", tags=["approval"])
+    @app.post(
+        "/api/approvals/{tracking_id}/decision",
+        tags=["approval"],
+        dependencies=[Depends(require_role("approver"))],
+    )
     async def decide(tracking_id: str, decision: HumanDecision) -> QueueItem:
         """Approve / reject / send back in ONE action (F5): raises the event on
         the paused workflow and resolves the queue item.

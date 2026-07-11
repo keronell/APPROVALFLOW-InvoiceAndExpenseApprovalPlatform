@@ -12,8 +12,15 @@ from approvalflow_approval.store import (
     QueueItem,
     QueueItemStatus,
 )
+from approvalflow_shared.auth import sign_token
 from approvalflow_shared.contracts import EscalationRequested, HumanDecision
 from fastapi.testclient import TestClient
+
+
+def _authed(client: TestClient) -> TestClient:
+    # N1: approval endpoints require the approver role (admin would also pass).
+    client.headers["Authorization"] = f"Bearer {sign_token('amy@northwind.example', 'approver')}"
+    return client
 
 
 class FakeGateway:
@@ -54,7 +61,7 @@ def gateway() -> FakeGateway:
 
 @pytest.fixture
 def client(gateway) -> TestClient:
-    return TestClient(build_app(store=InMemoryQueueStore(), gateway=gateway))
+    return _authed(TestClient(build_app(store=InMemoryQueueStore(), gateway=gateway)))
 
 
 def _enqueue(client, tid="t-1"):
@@ -141,9 +148,11 @@ def test_side_effects_replayed_after_gateway_failure():
     gateway = FailOnceGateway()
     # raise_server_exceptions=False so the failed side effect surfaces as a 500
     # the client would retry, rather than propagating into the test.
-    client = TestClient(
-        build_app(store=InMemoryQueueStore(), gateway=gateway),
-        raise_server_exceptions=False,
+    client = _authed(
+        TestClient(
+            build_app(store=InMemoryQueueStore(), gateway=gateway),
+            raise_server_exceptions=False,
+        )
     )
     _enqueue(client)
 
@@ -180,7 +189,10 @@ async def test_concurrent_posts_raise_workflow_once():
     app = build_app(store=store, gateway=gateway)
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+    approver = {"Authorization": f"Bearer {sign_token('amy@northwind.example', 'approver')}"}
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test", headers=approver
+    ) as ac:
         r1, r2 = await asyncio.gather(
             ac.post("/api/approvals/t-1/decision", json={"action": "approve"}),
             ac.post("/api/approvals/t-1/decision", json={"action": "approve"}),
@@ -230,7 +242,10 @@ async def test_concurrent_holder_failure_is_not_masked_as_success():
     app = build_app(store=store, gateway=gateway)
 
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+    approver = {"Authorization": f"Bearer {sign_token('amy@northwind.example', 'approver')}"}
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test", headers=approver
+    ) as ac:
         r1, r2 = await asyncio.gather(
             ac.post("/api/approvals/t-1/decision", json={"action": "approve"}),
             ac.post("/api/approvals/t-1/decision", json={"action": "approve"}),

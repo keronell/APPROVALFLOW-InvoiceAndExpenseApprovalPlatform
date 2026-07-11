@@ -5,6 +5,7 @@ from approvalflow_intake.app import build_app
 from approvalflow_intake.publisher import InMemoryPublisher
 from approvalflow_intake.service import IntakeService
 from approvalflow_intake.store import InMemorySubmissionStore
+from approvalflow_shared.auth import sign_token
 from approvalflow_shared.contracts import ItemStatus, Topics
 from approvalflow_shared.correlation import CORRELATION_HEADER
 from fastapi.testclient import TestClient
@@ -18,7 +19,27 @@ def publisher() -> InMemoryPublisher:
 @pytest.fixture
 def client(publisher) -> TestClient:
     service = IntakeService(InMemorySubmissionStore(), publisher)
-    return TestClient(build_app(service))
+    c = TestClient(build_app(service))
+    # N1: user-facing endpoints require a role; admin passes every gate.
+    c.headers["Authorization"] = f"Bearer {sign_token('tests@northwind.example', 'admin')}"
+    return c
+
+
+def test_submit_requires_submitter_role(client, fixtures_by_id):
+    """N1: no token → 401; approver token → 403; submitter token → 202."""
+    body = fixtures_by_id["INV-1001"]
+    assert client.post("/api/invoices", json=body, headers={"Authorization": ""}).status_code == 401
+    approver = {"Authorization": f"Bearer {sign_token('amy', 'approver')}"}
+    assert client.post("/api/invoices", json=body, headers=approver).status_code == 403
+    submitter = {"Authorization": f"Bearer {sign_token('sam', 'submitter')}"}
+    assert client.post("/api/invoices", json=body, headers=submitter).status_code == 202
+
+
+def test_token_endpoint_issues_role_scoped_jwt(client):
+    """N1: the dev issuer mounted on intake returns a working token."""
+    resp = client.post("/api/auth/token", json={"user": "sam", "role": "submitter"})
+    assert resp.status_code == 200
+    assert resp.json()["role"] == "submitter"
 
 
 def test_submit_returns_202_with_tracking_id(client, fixtures_by_id):

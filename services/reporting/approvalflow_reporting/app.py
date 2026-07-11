@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import os
 
+from approvalflow_shared.auth import require_role
 from approvalflow_shared.contracts import Topics
 from approvalflow_shared.daprio import DaprIO
 from approvalflow_shared.logging import get_logger
 from approvalflow_shared.web import create_app
-from fastapi import Request
+from fastapi import Depends, Request
 from pydantic import BaseModel, Field
 
 from .service import (
@@ -142,12 +143,20 @@ def build_app(service: ReportingService | None = None):
 
         app.post(f"/events/{topic}", tags=["dapr"])(_make_handler(topic))
 
-    @app.get("/api/reports/summary", tags=["reporting"])
+    @app.get(
+        "/api/reports/summary",
+        tags=["reporting"],
+        dependencies=[Depends(require_role("approver"))],
+    )
     async def summary() -> dict:
         """Controller dashboard numbers (F8)."""
         return await service.summary()
 
-    @app.get("/api/audit/{tracking_id}", tags=["reporting"])
+    @app.get(
+        "/api/audit/{tracking_id}",
+        tags=["reporting"],
+        dependencies=[Depends(require_role("admin"))],
+    )
     async def audit(tracking_id: str) -> list[AuditEntry]:
         """The complete decision trail for one item, by correlation id (F9)."""
         return await service.audit_trail(tracking_id)

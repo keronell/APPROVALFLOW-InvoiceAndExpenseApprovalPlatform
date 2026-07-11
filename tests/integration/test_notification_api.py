@@ -3,12 +3,16 @@
 import pytest
 from approvalflow_notification.app import build_app
 from approvalflow_notification.service import InMemoryInboxStore, NotificationService
+from approvalflow_shared.auth import sign_token
 from fastapi.testclient import TestClient
 
 
 @pytest.fixture
 def client() -> TestClient:
-    return TestClient(build_app(NotificationService(InMemoryInboxStore())))
+    c = TestClient(build_app(NotificationService(InMemoryInboxStore())))
+    # N1: the inbox requires any authenticated role.
+    c.headers["Authorization"] = f"Bearer {sign_token('tests@northwind.example', 'submitter')}"
+    return c
 
 
 def _submit(client, fixtures_by_id, fixture_id="INV-1001", tid="t-1"):

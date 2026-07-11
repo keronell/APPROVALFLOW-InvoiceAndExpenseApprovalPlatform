@@ -3,12 +3,16 @@
 import pytest
 from approvalflow_reporting.app import build_app
 from approvalflow_reporting.service import InMemoryReportStore, ReportingService
+from approvalflow_shared.auth import sign_token
 from fastapi.testclient import TestClient
 
 
 @pytest.fixture
 def client() -> TestClient:
-    return TestClient(build_app(ReportingService(InMemoryReportStore())))
+    c = TestClient(build_app(ReportingService(InMemoryReportStore())))
+    # N1: summary needs approver; the audit trail needs admin — admin covers both.
+    c.headers["Authorization"] = f"Bearer {sign_token('tests@northwind.example', 'admin')}"
+    return c
 
 
 def _event(client, topic: str, tid: str, **fields):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 
+from approvalflow_shared.auth import auth_router, require_role
 from approvalflow_shared.contracts import (
     InvoiceSubmission,
     StatusChanged,
@@ -12,7 +13,7 @@ from approvalflow_shared.contracts import (
 )
 from approvalflow_shared.correlation import get_correlation_id, new_correlation_id
 from approvalflow_shared.web import create_app
-from fastapi import Header, HTTPException, Request, Response, status
+from fastapi import Depends, Header, HTTPException, Request, Response, status
 
 from .publisher import EventPublisher, InMemoryPublisher
 from .service import IntakeService
@@ -40,11 +41,15 @@ def build_app(service: IntakeService | None = None):
     service = service or IntakeService(_build_store(), _build_publisher())
     app.state.service = service
 
+    # N1: intake hosts the dev token issuer (gateway route /api/auth → intake).
+    app.include_router(auth_router())
+
     @app.post(
         "/api/invoices",
         status_code=status.HTTP_202_ACCEPTED,
         response_model=SubmissionAccepted,
         tags=["intake"],
+        dependencies=[Depends(require_role("submitter"))],
     )
     async def submit_invoice(
         invoice: InvoiceSubmission,
@@ -61,6 +66,7 @@ def build_app(service: IntakeService | None = None):
         "/api/invoices/{tracking_id}",
         response_model=SubmissionRecord,
         tags=["intake"],
+        dependencies=[Depends(require_role())],  # any authenticated role
     )
     async def get_status(tracking_id: str) -> SubmissionRecord:
         record = await service.get_status(tracking_id)

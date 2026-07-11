@@ -5,11 +5,12 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 import dapr.ext.workflow as wf
+from approvalflow_shared.auth import require_role
 from approvalflow_shared.contracts import PaymentRequested, Topics
 from approvalflow_shared.daprio import DaprIO
 from approvalflow_shared.logging import get_logger
 from approvalflow_shared.web import create_app
-from fastapi import Request
+from fastapi import Depends, Request
 
 from .budget_dapr import STATE_STORE, DaprBudgetStore
 from .workflow import payment_workflow, wfr
@@ -63,13 +64,21 @@ def build_app():
         log.info("payment_workflow_scheduled", tracking_id=req.tracking_id)
         return {"status": "SUCCESS"}
 
-    @app.get("/api/budgets/{department}", tags=["payment"])
+    @app.get(
+        "/api/budgets/{department}",
+        tags=["payment"],
+        dependencies=[Depends(require_role("approver"))],
+    )
     async def get_budget(department: str) -> dict:
         store = DaprBudgetStore(app.state.dapr)
         available, _ = await store.get_budget(department)
         return {"department": department, "available": str(available)}
 
-    @app.get("/api/payments/{tracking_id}", tags=["payment"])
+    @app.get(
+        "/api/payments/{tracking_id}",
+        tags=["payment"],
+        dependencies=[Depends(require_role())],  # any authenticated role
+    )
     async def get_payment(tracking_id: str) -> dict:
         record = await app.state.dapr.get_state(STATE_STORE, f"payment::{tracking_id}")
         return record or {"status": "pending"}
