@@ -13,6 +13,8 @@ export default function App() {
   const [trackingId, setTrackingId] = useState("");
   const [user, setUser] = useState("dana.cohen@northwind.example");
   const [role, setRole] = useState("admin");
+  // Identity the installed JWT was issued for; null while sign-in is in flight.
+  const [auth, setAuth] = useState(null);
 
   return (
     <main>
@@ -22,7 +24,7 @@ export default function App() {
             <h1>ApprovalFlow</h1>
             <p className="tagline">The agent recommends — the deterministic router decides.</p>
           </div>
-          <AuthBar user={user} setUser={setUser} role={role} setRole={setRole} />
+          <AuthBar user={user} setUser={setUser} role={role} setRole={setRole} onAuth={setAuth} />
         </div>
         <nav>
           {TABS.map((t) => (
@@ -37,7 +39,7 @@ export default function App() {
       )}
       {tab === "Track" && <TrackView trackingId={trackingId} setTrackingId={setTrackingId} />}
       {tab === "Inbox" && <InboxView user={user} />}
-      {tab === "Approvals" && <ApprovalsView user={user} />}
+      {tab === "Approvals" && <ApprovalsView auth={auth} />}
       {tab === "Dashboard" && <DashboardView />}
     </main>
   );

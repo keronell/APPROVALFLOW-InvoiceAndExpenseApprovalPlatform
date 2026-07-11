@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { jsonFetch } from "../api.js";
 
-export default function ApprovalsView({ user }) {
+export default function ApprovalsView({ auth }) {
   const [queue, setQueue] = useState([]);
   const [notes, setNotes] = useState({});
   const [forbidden, setForbidden] = useState(false);
@@ -12,8 +12,12 @@ export default function ApprovalsView({ user }) {
       setQueue(await jsonFetch("/api/approvals"));
       setForbidden(false);
     } catch (e) {
-      // Gateway may still be warming up; only surface a real role problem.
-      if (e.status === 401 || e.status === 403) setForbidden(true);
+      // Gateway may still be warming up; only surface a real role problem —
+      // and drop the stale queue so restricted details don't linger on screen.
+      if (e.status === 401 || e.status === 403) {
+        setQueue([]);
+        setForbidden(true);
+      }
     }
   }, []);
 
@@ -26,10 +30,12 @@ export default function ApprovalsView({ user }) {
   const act = async (trackingId, action) => {
     setError("");
     try {
+      // auth.user is the identity the installed JWT was issued for, so the
+      // recorded approver can never diverge from the authenticated token.
       await jsonFetch(`/api/approvals/${trackingId}/decision`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, approver: user, note: notes[trackingId] || "" }),
+        body: JSON.stringify({ action, approver: auth.user, note: notes[trackingId] || "" }),
       });
       setNotes((n) => ({ ...n, [trackingId]: "" }));
       refresh();
@@ -43,7 +49,9 @@ export default function ApprovalsView({ user }) {
     <section>
       <div className="section-head">
         <h2>Approval queue <small>({queue.length} pending)</small></h2>
-        <span className="note">deciding as <code>{user}</code></span>
+        <span className="note">
+          {auth ? <>deciding as <code>{auth.user}</code></> : "signing in…"}
+        </span>
       </div>
       {error && <p className="error">{error}</p>}
       {forbidden && (
@@ -68,9 +76,12 @@ export default function ApprovalsView({ user }) {
               value={notes[esc.trackingId] || ""}
               onChange={(e) => setNotes((n) => ({ ...n, [esc.trackingId]: e.target.value }))} />
             <div className="row">
-              <button className="primary" onClick={() => act(esc.trackingId, "approve")}>Approve</button>
-              <button className="danger" onClick={() => act(esc.trackingId, "reject")}>Reject</button>
-              <button onClick={() => act(esc.trackingId, "send_back")}>Send back</button>
+              <button className="primary" disabled={!auth}
+                onClick={() => act(esc.trackingId, "approve")}>Approve</button>
+              <button className="danger" disabled={!auth}
+                onClick={() => act(esc.trackingId, "reject")}>Reject</button>
+              <button disabled={!auth}
+                onClick={() => act(esc.trackingId, "send_back")}>Send back</button>
             </div>
           </div>
         );

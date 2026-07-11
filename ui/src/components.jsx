@@ -14,11 +14,16 @@ export function Badge({ status }) {
 const ROLES = ["submitter", "approver", "admin"];
 
 // Dev sign-in (N1): trade user+role for a self-signed JWT at the gateway.
-export function AuthBar({ user, setUser, role, setRole }) {
+// onAuth reports the identity the installed token was actually issued for
+// (null while a fetch is in flight or failed), so views never act under a
+// token that doesn't match the typed user/role yet.
+export function AuthBar({ user, setUser, role, setRole, onAuth }) {
   const [signedIn, setSignedIn] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
+    setSignedIn(false);
+    onAuth(null);
     (async () => {
       try {
         const resp = await fetch("/api/auth/token", {
@@ -31,13 +36,14 @@ export function AuthBar({ user, setUser, role, setRole }) {
         if (!cancelled) {
           setAuthToken(data.token);
           setSignedIn(true);
+          onAuth({ user: data.user, role: data.role });
         }
       } catch {
         if (!cancelled) setSignedIn(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [user, role]);
+  }, [user, role, onAuth]);
 
   return (
     <div className="row authbar">
