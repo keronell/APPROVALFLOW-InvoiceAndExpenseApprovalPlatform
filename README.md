@@ -58,8 +58,11 @@ pytest
 
 CI runs the quality gates (ruff + pytest) and the end-to-end verification on
 every push. On a green `main`, the CD stage automatically builds and publishes
-all service images to GHCR as `ghcr.io/<owner>/approvalflow-<service>`
-(tagged `latest` + commit SHA) — no manual release step (N2).
+all service images to GHCR as `ghcr.io/<owner>/approvalflow-<service>`,
+tagged with the commit SHA — no manual release step (N2). The mutable `latest`
+tags are promoted in a follow-up job only after **every** image published
+successfully (and only if the commit is still the head of `main`), so `latest`
+always describes one tested commit, never a mixed-version release.
 
 ## System diagrams
 
