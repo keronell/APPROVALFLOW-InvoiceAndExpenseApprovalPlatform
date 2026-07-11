@@ -2,6 +2,7 @@
 
 import asyncio
 
+import httpx
 import pytest
 from approvalflow_approval.app import build_app
 from approvalflow_approval.store import InMemoryQueueStore, QueueItem, QueueItemStatus
@@ -152,6 +153,38 @@ def test_side_effects_replayed_after_gateway_failure():
     # Replayed exactly once — not zero (lost), not twice.
     assert [tid for tid, _ in gateway.raised] == ["t-1"]
     assert len(gateway.resolved_events) == 1
+
+
+class SlowGateway(FakeGateway):
+    """Holds inside raise_human_decision long enough for a racing request to
+    reach the side-effects region — proves the lease serialises them."""
+
+    async def raise_human_decision(self, tracking_id, decision) -> None:
+        await asyncio.sleep(0.05)
+        await super().raise_human_decision(tracking_id, decision)
+
+
+@pytest.mark.anyio
+async def test_concurrent_posts_raise_workflow_once():
+    """High: two approvers POST at the same time and the gateway is slow. The
+    side-effects lease must let only ONE request resume the workflow / publish."""
+    store = InMemoryQueueStore()
+    await store.upsert(QueueItem(escalation=EscalationRequested.model_validate(escalation())))
+    gateway = SlowGateway()
+    app = build_app(store=store, gateway=gateway)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        r1, r2 = await asyncio.gather(
+            ac.post("/api/approvals/t-1/decision", json={"action": "approve"}),
+            ac.post("/api/approvals/t-1/decision", json={"action": "approve"}),
+        )
+
+    assert r1.status_code == 200 and r2.status_code == 200
+    # Exactly one request ran the side effects, despite racing.
+    assert [tid for tid, _ in gateway.raised] == ["t-1"]
+    assert len(gateway.resolved_events) == 1
+    assert (await store.get("t-1")).side_effects_completed is True
 
 
 @pytest.mark.anyio
