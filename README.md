@@ -139,7 +139,7 @@ sequenceDiagram
         PA--)IN: Dapr pub/sub: item.status-changed (paid)
     end
 
-    Note over IN,PA: reporting subscribes to every topic<br/>(incl. escalation.resolved, published by approval) →<br/>dashboard metrics (F8) + audit trail per correlation id (F9);<br/>notification files terminal outcomes into a per-submitter inbox (M8)
+    Note over IN,PA: reporting subscribes to every topic<br/>(incl. escalation.resolved, published by approval) →<br/>dashboard metrics (F8) + audit trail per correlation id (F9),<br/>notification files terminal outcomes into a per-submitter inbox (M8)
 ```
 
 ### Payment flow — saga with compensation (Journey 4, INV-1012)
