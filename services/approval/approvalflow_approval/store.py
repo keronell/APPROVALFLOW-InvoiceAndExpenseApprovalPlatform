@@ -14,6 +14,12 @@ from pydantic import BaseModel, Field
 STATE_STORE = "statestore"
 INDEX_KEY = "queue-index"
 
+# How long a side-effect lease is honoured before another request may take it
+# over. Only matters for crash recovery: a request that acquires the lease and
+# dies without releasing it strands the item until the lease goes stale. Normal
+# failures release the lease immediately, so a retry does not wait this out.
+SIDE_EFFECT_LEASE_TTL = dt.timedelta(seconds=30)
+
 
 class QueueItemStatus(StrEnum):
     PENDING = "pending"
@@ -35,6 +41,11 @@ class QueueItem(BaseModel):
     # This stays False until both side effects have completed, so a claim whose
     # side effects failed is replayed by a retry instead of being lost.
     side_effects_completed: bool = False
+    # Lease held by the single request currently executing the side effects, so
+    # concurrent retries don't run them in parallel. Cleared on success (flag
+    # set) or on failure (released for immediate retry); honoured for
+    # SIDE_EFFECT_LEASE_TTL otherwise, for crash recovery.
+    side_effects_lease_at: dt.datetime | None = None
 
 
 def _resolve(item: QueueItem, decision: HumanDecision) -> None:
@@ -63,6 +74,20 @@ class QueueStore(Protocol):
         the item is missing or already resolved. This is what stops two
         concurrent approvers from both raising the workflow event and publishing
         conflicting ``escalation.resolved`` events (M10)."""
+        ...
+
+    async def try_begin_side_effects(self, tracking_id: str) -> QueueItem | None:
+        """Atomically acquire the side-effects lease for a RESOLVED item.
+
+        Returns the item if this caller may run the side effects (they aren't
+        done and no fresh lease is held), else ``None``. This is the atomic
+        "I am the request executing the side effects" claim that keeps two
+        concurrent retries from both resuming the workflow / publishing."""
+        ...
+
+    async def release_side_effects_lease(self, tracking_id: str) -> None:
+        """Drop the lease without marking completion, so a retry can re-acquire
+        immediately after a failed side effect."""
         ...
 
     async def mark_side_effects_completed(self, tracking_id: str) -> QueueItem | None:
@@ -97,12 +122,33 @@ class InMemoryQueueStore:
             self._items[tracking_id] = item
             return item
 
+    async def try_begin_side_effects(self, tracking_id: str) -> QueueItem | None:
+        async with self._lock:
+            item = self._items.get(tracking_id)
+            if item is None or item.side_effects_completed:
+                return None
+            now = dt.datetime.now(dt.UTC)
+            lease = item.side_effects_lease_at
+            if lease is not None and now - lease < SIDE_EFFECT_LEASE_TTL:
+                return None  # another request holds a fresh lease
+            item.side_effects_lease_at = now
+            self._items[tracking_id] = item
+            return item
+
+    async def release_side_effects_lease(self, tracking_id: str) -> None:
+        async with self._lock:
+            item = self._items.get(tracking_id)
+            if item is not None and not item.side_effects_completed:
+                item.side_effects_lease_at = None
+                self._items[tracking_id] = item
+
     async def mark_side_effects_completed(self, tracking_id: str) -> QueueItem | None:
         async with self._lock:
             item = self._items.get(tracking_id)
             if item is None:
                 return None
             item.side_effects_completed = True
+            item.side_effects_lease_at = None
             self._items[tracking_id] = item
             return item
 
@@ -135,6 +181,42 @@ class DaprQueueStore:
                 return item
         return None
 
+    async def try_begin_side_effects(self, tracking_id: str) -> QueueItem | None:
+        key = f"queue::{tracking_id}"
+        for _ in range(self._RETRIES):
+            value, etag = await self._dapr.get_state_and_etag(STATE_STORE, key)
+            if value is None:
+                return None
+            item = QueueItem.model_validate(value)
+            if item.side_effects_completed:
+                return None
+            now = dt.datetime.now(dt.UTC)
+            lease = item.side_effects_lease_at
+            if lease is not None and now - lease < SIDE_EFFECT_LEASE_TTL:
+                return None  # another request holds a fresh lease
+            item.side_effects_lease_at = now
+            # First-write CAS: exactly one racing request wins the lease.
+            if await self._dapr.try_save_state(
+                STATE_STORE, key, item.model_dump(mode="json"), etag=etag
+            ):
+                return item
+        return None
+
+    async def release_side_effects_lease(self, tracking_id: str) -> None:
+        key = f"queue::{tracking_id}"
+        for _ in range(self._RETRIES):
+            value, etag = await self._dapr.get_state_and_etag(STATE_STORE, key)
+            if value is None:
+                return
+            item = QueueItem.model_validate(value)
+            if item.side_effects_completed or item.side_effects_lease_at is None:
+                return
+            item.side_effects_lease_at = None
+            if await self._dapr.try_save_state(
+                STATE_STORE, key, item.model_dump(mode="json"), etag=etag
+            ):
+                return
+
     async def mark_side_effects_completed(self, tracking_id: str) -> QueueItem | None:
         key = f"queue::{tracking_id}"
         for _ in range(self._RETRIES):
@@ -145,6 +227,7 @@ class DaprQueueStore:
             if item.side_effects_completed:
                 return item  # already marked (idempotent)
             item.side_effects_completed = True
+            item.side_effects_lease_at = None
             if await self._dapr.try_save_state(
                 STATE_STORE, key, item.model_dump(mode="json"), etag=etag
             ):

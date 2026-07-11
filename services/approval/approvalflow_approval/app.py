@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Protocol, runtime_checkable
 
@@ -21,6 +22,13 @@ from .store import InMemoryQueueStore, QueueItem, QueueItemStatus, QueueStore
 log = get_logger()
 
 DECISION_APP_ID = "decision"
+
+# When a concurrent request holds the side-effects lease, the loser waits this
+# long (attempts x interval) for it to finish before giving up with a retryable
+# 503 — so success is only ever reported once the side effects have actually
+# completed, never while they are merely leased.
+_SIDE_EFFECT_WAIT_ATTEMPTS = 15
+_SIDE_EFFECT_POLL_SECONDS = 0.2
 
 
 @runtime_checkable
@@ -102,17 +110,22 @@ def build_app(store: QueueStore | None = None, gateway: DecisionGateway | None =
         """Approve / reject / send back in ONE action (F5): raises the event on
         the paused workflow and resolves the queue item.
 
-        Ordering is claim → side effects → mark done, so nothing is lost:
+        Ordering is claim → lease → side effects → mark done, so nothing is lost,
+        nothing runs twice concurrently, and success is never reported early:
 
         - The PENDING→RESOLVED claim (``try_resolve``) is atomic, so two
           concurrent approvers can't both win (M10).
         - The side effects (resume the workflow, publish escalation.resolved)
-          run *after* the claim but are gated by ``side_effects_completed``. If
-          they fail, the item stays RESOLVED-but-incomplete and the endpoint
-          errors, so a retry replays exactly the missing side effects instead of
-          the old early-return dropping them. Both side effects are idempotent
-          (the workflow consumes the human-decision event once; reporting dedupes
-          escalation.resolved), so an at-least-once replay is safe.
+          run only for the request that wins the atomic ``try_begin_side_effects``
+          lease, so concurrent retries never run them in parallel.
+        - A request that loses the lease does NOT return success while the work
+          is only leased: it waits for the holder to finish (then returns the
+          completed item), takes the lease over if the holder failed and released
+          it, or returns a retryable 503 if the holder is still mid-flight.
+        - If the side effects fail, the lease is released and the endpoint errors,
+          so a retry re-acquires and replays exactly the missing side effects.
+          They are idempotent (the workflow consumes the human-decision event
+          once; reporting dedupes escalation.resolved), so replay is safe.
         """
         item = await store.get(tracking_id)
         if item is None:
@@ -121,29 +134,53 @@ def build_app(store: QueueStore | None = None, gateway: DecisionGateway | None =
         if item.status == QueueItemStatus.PENDING:
             claimed = await store.try_resolve(tracking_id, decision)
             # If we lost the race, reload the winner's resolved item; its own
-            # side effects may still be pending, which the block below completes.
+            # side effects may still be pending, which the loop below completes.
             item = claimed if claimed is not None else (await store.get(tracking_id) or item)
 
-        if not item.side_effects_completed:
-            # Replay from the STORED decision (the claim winner's), so a retry
-            # carrying a different action can't override the recorded outcome.
-            outcome = HumanDecision(
-                action=item.action, approver=item.approver, note=item.note
-            )
-            await gateway.raise_human_decision(tracking_id, outcome)
-            await gateway.publish_resolved(
-                EscalationResolved(
-                    tracking_id=tracking_id,
-                    correlation_id=item.escalation.correlation_id,
-                    action=outcome.action,
-                    usd_amount=item.escalation.usd_amount,
-                    approver=outcome.approver,
-                )
-            )
-            item = await store.mark_side_effects_completed(tracking_id) or item
-            log.info("escalation_resolved", tracking_id=tracking_id, action=str(outcome.action))
+        for _ in range(_SIDE_EFFECT_WAIT_ATTEMPTS):
+            if item.side_effects_completed:
+                return item  # genuinely done — safe to report success
 
-        return item
+            leased = await store.try_begin_side_effects(tracking_id)
+            if leased is None:
+                # Another request currently holds the lease. Wait for it to
+                # finish (or fail and release) rather than returning success
+                # while the workflow may not have been resumed.
+                await asyncio.sleep(_SIDE_EFFECT_POLL_SECONDS)
+                item = await store.get(tracking_id) or item
+                continue
+
+            # We hold the lease. Replay from the STORED decision (the claim
+            # winner's), so a retry carrying a different action can't override
+            # the recorded outcome.
+            outcome = HumanDecision(
+                action=leased.action, approver=leased.approver, note=leased.note
+            )
+            try:
+                await gateway.raise_human_decision(tracking_id, outcome)
+                await gateway.publish_resolved(
+                    EscalationResolved(
+                        tracking_id=tracking_id,
+                        correlation_id=leased.escalation.correlation_id,
+                        action=outcome.action,
+                        usd_amount=leased.escalation.usd_amount,
+                        approver=outcome.approver,
+                    )
+                )
+            except Exception:
+                # Free the lease so a retry (this caller or another) re-acquires
+                # and replays; the failure surfaces as a 5xx, never as success.
+                await store.release_side_effects_lease(tracking_id)
+                raise
+            item = await store.mark_side_effects_completed(tracking_id) or leased
+            log.info("escalation_resolved", tracking_id=tracking_id, action=str(outcome.action))
+            return item
+
+        # The lease holder is still mid-flight after the wait window (it hasn't
+        # completed or released). Do not claim success — signal a retry.
+        raise HTTPException(
+            status_code=503, detail="Approval side effects in progress; please retry."
+        )
 
     return app
 

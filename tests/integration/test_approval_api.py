@@ -1,10 +1,17 @@
 """Approval service: escalation queue + one-action decision (F4/F5/M10)."""
 
 import asyncio
+import datetime as dt
 
+import httpx
 import pytest
 from approvalflow_approval.app import build_app
-from approvalflow_approval.store import InMemoryQueueStore, QueueItem, QueueItemStatus
+from approvalflow_approval.store import (
+    SIDE_EFFECT_LEASE_TTL,
+    InMemoryQueueStore,
+    QueueItem,
+    QueueItemStatus,
+)
 from approvalflow_shared.contracts import EscalationRequested, HumanDecision
 from fastapi.testclient import TestClient
 
@@ -152,6 +159,92 @@ def test_side_effects_replayed_after_gateway_failure():
     # Replayed exactly once — not zero (lost), not twice.
     assert [tid for tid, _ in gateway.raised] == ["t-1"]
     assert len(gateway.resolved_events) == 1
+
+
+class SlowGateway(FakeGateway):
+    """Holds inside raise_human_decision long enough for a racing request to
+    reach the side-effects region — proves the lease serialises them."""
+
+    async def raise_human_decision(self, tracking_id, decision) -> None:
+        await asyncio.sleep(0.05)
+        await super().raise_human_decision(tracking_id, decision)
+
+
+@pytest.mark.anyio
+async def test_concurrent_posts_raise_workflow_once():
+    """High: two approvers POST at the same time and the gateway is slow. The
+    side-effects lease must let only ONE request resume the workflow / publish."""
+    store = InMemoryQueueStore()
+    await store.upsert(QueueItem(escalation=EscalationRequested.model_validate(escalation())))
+    gateway = SlowGateway()
+    app = build_app(store=store, gateway=gateway)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        r1, r2 = await asyncio.gather(
+            ac.post("/api/approvals/t-1/decision", json={"action": "approve"}),
+            ac.post("/api/approvals/t-1/decision", json={"action": "approve"}),
+        )
+
+    assert r1.status_code == 200 and r2.status_code == 200
+    # Exactly one request ran the side effects, despite racing.
+    assert [tid for tid, _ in gateway.raised] == ["t-1"]
+    assert len(gateway.resolved_events) == 1
+    assert (await store.get("t-1")).side_effects_completed is True
+
+
+@pytest.mark.anyio
+async def test_stale_side_effects_lease_is_recovered():
+    """A lease held by a crashed request must be taken over once it goes stale,
+    while a fresh lease still blocks — otherwise a crashed holder would strand
+    the side effects forever."""
+    store = InMemoryQueueStore()
+    item = QueueItem(escalation=EscalationRequested.model_validate(escalation()))
+    await store.upsert(item)
+    await store.try_resolve("t-1", HumanDecision(action="approve", approver="a@x"))
+
+    # First holder acquires the lease…
+    assert await store.try_begin_side_effects("t-1") is not None
+    # …a concurrent/immediate second attempt is blocked by the fresh lease.
+    assert await store.try_begin_side_effects("t-1") is None
+
+    # Simulate the holder crashing: age the lease past the TTL.
+    held = await store.get("t-1")
+    stale = dt.datetime.now(dt.UTC) - (SIDE_EFFECT_LEASE_TTL + dt.timedelta(seconds=1))
+    held.side_effects_lease_at = stale
+    await store.upsert(held)
+
+    # Now the stale lease can be taken over for recovery.
+    assert await store.try_begin_side_effects("t-1") is not None
+
+
+@pytest.mark.anyio
+async def test_concurrent_holder_failure_is_not_masked_as_success():
+    """P2: when two POSTs race and the lease holder fails its side effects, the
+    other request must NOT receive a 200 with the work still incomplete. It waits
+    out the holder, takes the lease over, and completes it (or surfaces an error).
+    """
+    store = InMemoryQueueStore()
+    await store.upsert(QueueItem(escalation=EscalationRequested.model_validate(escalation())))
+    gateway = FailOnceGateway()  # first raise fails, the takeover succeeds
+    app = build_app(store=store, gateway=gateway)
+
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        r1, r2 = await asyncio.gather(
+            ac.post("/api/approvals/t-1/decision", json={"action": "approve"}),
+            ac.post("/api/approvals/t-1/decision", json={"action": "approve"}),
+        )
+
+    # One request saw the failure (5xx); the other completed the takeover (200).
+    assert sorted([r1.status_code, r2.status_code]) == [200, 500]
+    ok = r1 if r1.status_code == 200 else r2
+    # The success is genuine, not a leased-but-incomplete item.
+    assert ok.json()["side_effects_completed"] is True
+    # Side effects ran exactly once overall, and the item is truly complete.
+    assert [tid for tid, _ in gateway.raised] == ["t-1"]
+    assert len(gateway.resolved_events) == 1
+    assert (await store.get("t-1")).side_effects_completed is True
 
 
 @pytest.mark.anyio
