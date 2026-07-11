@@ -219,6 +219,35 @@ async def test_stale_side_effects_lease_is_recovered():
 
 
 @pytest.mark.anyio
+async def test_concurrent_holder_failure_is_not_masked_as_success():
+    """P2: when two POSTs race and the lease holder fails its side effects, the
+    other request must NOT receive a 200 with the work still incomplete. It waits
+    out the holder, takes the lease over, and completes it (or surfaces an error).
+    """
+    store = InMemoryQueueStore()
+    await store.upsert(QueueItem(escalation=EscalationRequested.model_validate(escalation())))
+    gateway = FailOnceGateway()  # first raise fails, the takeover succeeds
+    app = build_app(store=store, gateway=gateway)
+
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        r1, r2 = await asyncio.gather(
+            ac.post("/api/approvals/t-1/decision", json={"action": "approve"}),
+            ac.post("/api/approvals/t-1/decision", json={"action": "approve"}),
+        )
+
+    # One request saw the failure (5xx); the other completed the takeover (200).
+    assert sorted([r1.status_code, r2.status_code]) == [200, 500]
+    ok = r1 if r1.status_code == 200 else r2
+    # The success is genuine, not a leased-but-incomplete item.
+    assert ok.json()["side_effects_completed"] is True
+    # Side effects ran exactly once overall, and the item is truly complete.
+    assert [tid for tid, _ in gateway.raised] == ["t-1"]
+    assert len(gateway.resolved_events) == 1
+    assert (await store.get("t-1")).side_effects_completed is True
+
+
+@pytest.mark.anyio
 async def test_concurrent_claims_resolve_exactly_once():
     """M10: two approvers act on the same pending item at once — the atomic
     PENDING→RESOLVED claim lets exactly one win; the other gets None."""
