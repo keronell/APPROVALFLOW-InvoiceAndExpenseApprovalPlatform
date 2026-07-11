@@ -1,8 +1,10 @@
 """Approval service: escalation queue + one-action decision (F4/F5/M10)."""
 
+import asyncio
+
 import pytest
 from approvalflow_approval.app import build_app
-from approvalflow_approval.store import InMemoryQueueStore, QueueItemStatus
+from approvalflow_approval.store import InMemoryQueueStore, QueueItem, QueueItemStatus
 from approvalflow_shared.contracts import EscalationRequested, HumanDecision
 from fastapi.testclient import TestClient
 
@@ -108,3 +110,18 @@ def test_send_back_action(client, gateway):
 def test_unknown_item_is_404(client):
     resp = client.post("/api/approvals/nope/decision", json={"action": "approve"})
     assert resp.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_concurrent_claims_resolve_exactly_once():
+    """M10: two approvers act on the same pending item at once — the atomic
+    PENDING→RESOLVED claim lets exactly one win; the other gets None."""
+    store = InMemoryQueueStore()
+    await store.upsert(QueueItem(escalation=EscalationRequested.model_validate(escalation("t-x"))))
+    a, b = await asyncio.gather(
+        store.try_resolve("t-x", HumanDecision(action="approve", approver="a@x")),
+        store.try_resolve("t-x", HumanDecision(action="reject", approver="b@x")),
+    )
+    assert [a is not None, b is not None].count(True) == 1  # one winner
+    resolved = await store.get("t-x")
+    assert resolved.status == QueueItemStatus.RESOLVED

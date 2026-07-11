@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import datetime as dt
 import os
 from typing import Protocol, runtime_checkable
 
@@ -108,26 +107,28 @@ def build_app(store: QueueStore | None = None, gateway: DecisionGateway | None =
         if item.status == QueueItemStatus.RESOLVED:
             return item  # idempotent: acting twice has one effect (M10)
 
+        # Claim the PENDING→RESOLVED transition ATOMICALLY *before* raising the
+        # workflow event. Two concurrent approvers race here; only the winner
+        # gets an item back and proceeds to raise + publish, so we never emit
+        # conflicting escalation.resolved events (M10).
+        claimed = await store.try_resolve(tracking_id, decision)
+        if claimed is None:
+            # Lost the race (or already resolved) — return the resolved item,
+            # doing no new work.
+            return await store.get(tracking_id) or item
+
         await gateway.raise_human_decision(tracking_id, decision)
-
-        item.status = QueueItemStatus.RESOLVED
-        item.action = decision.action
-        item.approver = decision.approver
-        item.note = decision.note
-        item.resolved_at = dt.datetime.now(dt.UTC)
-        await store.upsert(item)
-
         await gateway.publish_resolved(
             EscalationResolved(
                 tracking_id=tracking_id,
-                correlation_id=item.escalation.correlation_id,
+                correlation_id=claimed.escalation.correlation_id,
                 action=decision.action,
-                usd_amount=item.escalation.usd_amount,
+                usd_amount=claimed.escalation.usd_amount,
                 approver=decision.approver,
             )
         )
         log.info("escalation_resolved", tracking_id=tracking_id, action=str(decision.action))
-        return item
+        return claimed
 
     return app
 
