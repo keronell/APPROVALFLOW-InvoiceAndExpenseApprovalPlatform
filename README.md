@@ -13,11 +13,12 @@ Capstone for the **Microservice Architecture** and **AI Engineering** courses.
 
 [![ApprovalFlow application demo](docs/assets/application-demo.gif)](docs/assets/application-demo.mp4?raw=1)
 
-> 🚧 Work in progress — built in staged pull requests. See the PR history for the
-> requirement-by-requirement trail. Current: **all four worked journeys are green
-> end-to-end** via `tools/verify.py` (9/9): auto-approve→paid, escalate-and-resume
+> Built in staged pull requests — see the PR history for the
+> requirement-by-requirement trail. **All four worked journeys are green
+> end-to-end** via `tools/verify.py` (11/11): auto-approve→paid, escalate-and-resume
 > (surviving a decision-service restart), duplicate short-circuit, and payment
-> failure + compensation — plus the anti-cheese guards and the gateway check.
+> failure + compensation — plus the anti-cheese guards, the gateway check,
+> inbox delivery, and the auth (401/403) checks.
 
 ## Tech stack
 
@@ -27,8 +28,9 @@ Capstone for the **Microservice Architecture** and **AI Engineering** courses.
 - **RabbitMQ** — message broker behind Dapr pub/sub
 - **Redis** — per-service Dapr state stores (thresholds served by the config service, runtime-changeable)
 - **nginx** — API gateway (single entry point, rate limiting) + serves the UI
-- **React + Vite** — minimal UI
-- **Ollama + Qwen** (default) / Groq / Gemini / deterministic stub — LLM provider, swappable by config
+- **React + Vite** — UI: form-based submission, live tracking with an audit
+  timeline, approval queue, inbox, dashboard
+- **Ollama + Qwen** (default) / Groq / Gemini / OpenAI / deterministic stub — LLM provider, swappable by config
 
 ## Run locally
 
@@ -61,11 +63,30 @@ through the gateway and stay token-free. The issuer is a dev-grade stub
 (HS256, secret in `AUTH_SECRET`) — production would swap in a real identity
 provider without touching the route guards.
 
+## Using the UI
+
+The UI at <http://localhost:8080> has five tabs; the role picker in the header
+signs you in (see [Auth](#auth-n1)):
+
+- **Submit** — a form mirroring the invoice schema (line items, category,
+  receipt flag, …) with one-click sample pre-fills; an **Edit as JSON** toggle
+  posts a raw fixture as-is (handy for the `test.failPayment` demo hook).
+  Accepted items return a tracking id and jump straight to Track.
+- **Track** — live status and plain-language reason for one tracking id; with
+  the `admin` role it also renders the full audit trail as a timeline
+  (submitted → decision → human review → paid / failed).
+- **Inbox** — final outcomes for a submitter email (M8).
+- **Approvals** — the escalation queue (needs `approver`): each card shows the
+  agent's recommendation, confidence, and cited policy rules; approve / reject /
+  send back in one action (F5), with an optional note recorded to the audit
+  trail. Decisions are attributed to the signed-in user.
+- **Dashboard** — throughput and autonomy metrics (needs `approver`).
+
 ## Verify
 
 A single command runs the four acceptance journeys (auto-approve, escalate-and-resume,
-duplicate, payment failure + compensation) plus the anti-cheese guards, and prints
-pass/fail:
+duplicate, payment failure + compensation) plus the anti-cheese, gateway, inbox, and
+auth guards — 11 checks — and prints pass/fail:
 
 ```bash
 python tools/verify.py    # uses the deterministic stub model — no rate limits
@@ -110,7 +131,7 @@ sequenceDiagram
     participant AP as Approval
     participant PA as Payment
 
-    Submitter->>GW: POST /api/invoices
+    Submitter->>GW: POST /api/invoices<br/>(Bearer submitter JWT — N1)
     Note over GW: nginx rate-limit (limit_req)<br/>mints/propagates X-Correlation-Id
     GW->>IN: proxy /api/invoices
     Note over IN: Dapr state store: fingerprint claim (fp::)<br/>+ idempotency key (idem::) — GLOBAL-DUP / M10
@@ -134,7 +155,7 @@ sequenceDiagram
     else route = human_review — Journey 2 (INV-1003)
         DE--)AP: Dapr pub/sub: escalation.requested<br/>(recommendation, confidence, cited rules — F4)
         Note over DE: Dapr Workflow: wait_for_external_event("HumanDecision")<br/>durable pause in the state store —<br/>survives a decision-service restart (M11)
-        Approver->>GW: POST /api/approvals/{trackingId}/decision (one action — F5)
+        Approver->>GW: POST /api/approvals/{trackingId}/decision<br/>(one action — F5, Bearer approver JWT)
         GW->>AP: proxy
         AP->>DE: Dapr service invocation:<br/>POST api/decisions/{trackingId}/human-decision
         Note over DE: raise_workflow_event → workflow resumes<br/>exactly where it paused
@@ -178,7 +199,7 @@ flowchart TD
 services/    FastAPI microservices (one folder per service) + shared library
 gateway/     nginx gateway (UI + API entry point, rate limiting)
 ui/          React + Vite frontend
-dapr/        Dapr component definitions (pub/sub, state, config)
+dapr/        Dapr component definitions (pub/sub, state, secrets)
 tools/       verification command + helpers
 tests/       unit / integration tests
 docs/        ARCHITECTURE.md, ADRs, product dilemma

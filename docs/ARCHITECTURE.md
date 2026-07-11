@@ -14,6 +14,11 @@ function names are the ones in the repo. Each arrow is labeled with the Dapr
 building block it uses (service invocation, pub/sub over RabbitMQ, state store,
 Workflow). The nginx gateway is the single external entry point (M6); one
 correlation id — the tracking id — follows the request end-to-end (M14/F9).
+User-facing calls carry a role JWT (N1) — submitting needs `submitter`, working
+the queue needs `approver`, the audit trail needs `admin` — enforced by
+`require_role` in each owning service; the gateway proxies only user-facing
+routes, and Dapr-internal surfaces (pub/sub handlers, service invocation) are
+never exposed through it.
 
 ## Journeys 1 & 2 — submit → decide → (auto-approve | escalate-and-resume)
 
@@ -30,7 +35,7 @@ sequenceDiagram
     participant AP as Approval
     participant PA as Payment
 
-    Submitter->>GW: POST /api/invoices
+    Submitter->>GW: POST /api/invoices<br/>(Bearer submitter JWT — N1)
     Note over GW: nginx rate-limit (limit_req)<br/>mints/propagates X-Correlation-Id
     GW->>IN: proxy /api/invoices
     Note over IN: Dapr state store: fingerprint claim (fp::)<br/>+ idempotency key (idem::) — GLOBAL-DUP / M10
@@ -54,7 +59,7 @@ sequenceDiagram
     else route = human_review — Journey 2 (INV-1003)
         DE--)AP: Dapr pub/sub: escalation.requested<br/>(recommendation, confidence, cited rules — F4)
         Note over DE: Dapr Workflow: wait_for_external_event("HumanDecision")<br/>durable pause in the state store —<br/>survives a decision-service restart (M11)
-        Approver->>GW: POST /api/approvals/{trackingId}/decision (one action — F5)
+        Approver->>GW: POST /api/approvals/{trackingId}/decision<br/>(one action — F5, Bearer approver JWT)
         GW->>AP: proxy
         AP->>DE: Dapr service invocation:<br/>POST api/decisions/{trackingId}/human-decision
         Note over DE: raise_workflow_event → workflow resumes<br/>exactly where it paused
@@ -103,10 +108,11 @@ flowchart TD
 | Requirement | Where it appears above |
 |---|---|
 | M6 single entry + rate limit | Gateway participant, first note |
-| M8 async intake | `202 + trackingId` before any processing; result via events |
+| M8 async intake + notify | `202 + trackingId` before any processing; notification files terminal outcomes into the submitter's inbox (final note) |
 | M9 compensation | red `release_activity` path — budget restored, then `payment_failed` |
 | M10 idempotency | fingerprint/idempotency claims at intake; workflow instance id = tracking id; idempotent saga activities |
 | M11 durable HITL | `wait_for_external_event` note — the pause survives a decision-service restart (proven by `tools/verify.py` Journey 2, which restarts the container between pause and resume) |
 | M12/F10 provable ceiling | router note — the deterministic router decides; the agent is advisory |
 | M14/F9 correlation | gateway mints/propagates `X-Correlation-Id` = tracking id; decision record + reporting audit trail keyed by it |
 | F4/F5 | escalation payload carries recommendation/confidence/cited rules; one-action approve/reject/send-back |
+| N1 role JWT auth | Bearer tokens on the submit/approve arrows; `require_role` guards live in each service, not the gateway — Dapr-internal surfaces stay unexposed |
