@@ -16,6 +16,7 @@ from .service import (
     ItemRef,
     Notification,
     NotificationService,
+    RefNotReadyError,
 )
 
 log = get_logger()
@@ -99,7 +100,12 @@ def build_app(service: NotificationService | None = None):
     async def on_status_changed(request: Request) -> dict:
         envelope = await request.json()
         payload = envelope.get("data", envelope)
-        await service.on_status_changed(StatusChanged.model_validate(payload))
+        try:
+            await service.on_status_changed(StatusChanged.model_validate(payload))
+        except RefNotReadyError:
+            # Terminal status arrived before item.submitted — tell Dapr to
+            # redeliver rather than dropping the notification.
+            return {"status": "RETRY"}
         return {"status": "SUCCESS"}
 
     @app.get("/api/notifications", tags=["notification"])
