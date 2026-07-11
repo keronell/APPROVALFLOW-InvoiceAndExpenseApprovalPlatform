@@ -1,7 +1,7 @@
 """Decision pipeline (engine → stub agent → router) produces correct records."""
 
 import pytest
-from approvalflow_decision.agent.assessor import DecisionAgent
+from approvalflow_decision.agent.assessor import AgentUnavailableError, DecisionAgent
 from approvalflow_decision.agent.stub_client import StubChatClient
 from approvalflow_decision.models import AutonomyThresholds
 from approvalflow_decision.service.decision_core import decide
@@ -10,6 +10,13 @@ from approvalflow_shared.contracts import InvoiceSubmission, ItemStatus, Route
 
 def _agent() -> DecisionAgent:
     return DecisionAgent(StubChatClient())
+
+
+class _DownAgent:
+    """An agent whose provider is unavailable."""
+
+    async def assess(self, invoice):
+        raise AgentUnavailableError("provider down")
 
 
 @pytest.mark.anyio
@@ -36,6 +43,17 @@ async def test_reject_record(fixtures_by_id):
     record = await decide("t-3", "t-3", invoice, AutonomyThresholds(), _agent())
     assert record.route == Route.REJECT
     assert record.status == ItemStatus.REJECTED
+
+
+@pytest.mark.anyio
+async def test_agent_outage_fails_safe_to_human_review(fixtures_by_id):
+    """When the model provider is down, the item is routed to a human — never
+    stranded, never auto-approved — even if it would otherwise auto-approve."""
+    invoice = InvoiceSubmission.model_validate(fixtures_by_id["INV-1001"])  # normally auto
+    record = await decide("t-down", "t-down", invoice, AutonomyThresholds(), _DownAgent())
+    assert record.route == Route.HUMAN_REVIEW
+    assert record.status == ItemStatus.PENDING_APPROVAL
+    assert record.assessment.confidence == 0.0
 
 
 @pytest.mark.anyio
