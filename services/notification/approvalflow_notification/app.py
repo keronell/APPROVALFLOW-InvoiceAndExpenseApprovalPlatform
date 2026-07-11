@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import os
 
+from approvalflow_shared.auth import require_role
 from approvalflow_shared.contracts import ItemSubmitted, StatusChanged, Topics
 from approvalflow_shared.daprio import DaprIO
 from approvalflow_shared.logging import get_logger
 from approvalflow_shared.web import create_app
-from fastapi import Request
+from fastapi import Depends, Request
 
 from .service import (
     STATE_STORE,
@@ -108,7 +109,11 @@ def build_app(service: NotificationService | None = None):
             return {"status": "RETRY"}
         return {"status": "SUCCESS"}
 
-    @app.get("/api/notifications", tags=["notification"])
+    @app.get(
+        "/api/notifications",
+        tags=["notification"],
+        dependencies=[Depends(require_role())],  # any authenticated role
+    )
     async def get_inbox(submitter: str) -> list[Notification]:
         """The submitter's inbox — final outcomes, newest first (M8)."""
         return await service.inbox(submitter)

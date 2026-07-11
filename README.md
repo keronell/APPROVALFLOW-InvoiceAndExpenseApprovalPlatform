@@ -36,6 +36,27 @@ docker compose up
 Everything — services, gateway, queue, databases, Dapr sidecars — comes up with that one
 command. The UI is served at <http://localhost:8080>.
 
+## Auth (N1)
+
+User-facing API endpoints require a **self-signed role JWT** (roles:
+`submitter` / `approver` / `admin`; admin passes every gate). The UI signs in
+automatically via the role picker in the header; API clients trade a user+role
+for a token first:
+
+```bash
+curl -s -X POST http://localhost:8080/api/auth/token \
+  -H 'Content-Type: application/json' \
+  -d '{"user":"dana.cohen@northwind.example","role":"submitter"}'
+# → {"token":"...", ...}   then:  Authorization: Bearer <token>
+```
+
+Role map: submit needs `submitter`; the approval queue, decisions, budgets and
+the dashboard need `approver`; the audit trail needs `admin`. Dapr-internal
+surfaces (pub/sub handlers, service invocation, health checks) are not exposed
+through the gateway and stay token-free. The issuer is a dev-grade stub
+(HS256, secret in `AUTH_SECRET`) — production would swap in a real identity
+provider without touching the route guards.
+
 ## Verify
 
 A single command runs the four acceptance journeys (auto-approve, escalate-and-resume,

@@ -57,10 +57,34 @@ TERMINAL = {"rejected", "duplicate", "sent_back", "paid", "payment_failed"}
 # --------------------------------------------------------------------------- #
 # HTTP helpers
 # --------------------------------------------------------------------------- #
+# N1: user-facing endpoints require a role JWT. verify.py authenticates the way
+# a real client does — POST /api/auth/token — and caches one token per role.
+_TOKENS: dict[str, str] = {}
+
+
+def _token(role: str) -> str:
+    if role not in _TOKENS:
+        body = json.dumps({"user": f"verify-{role}@northwind.example", "role": role}).encode()
+        req = urllib.request.Request(
+            f"{INTAKE}/api/auth/token",
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            _TOKENS[role] = json.load(resp)["token"]
+    return _TOKENS[role]
+
+
+def _auth(role: str = "admin") -> dict:
+    return {"Authorization": f"Bearer {_token(role)}"}
+
+
 def _post_invoice(fixture_id: str) -> str:
     body = json.dumps(FIXTURES_BY_ID[fixture_id]).encode()
     req = urllib.request.Request(
-        f"{INTAKE}/api/invoices", data=body, headers={"Content-Type": "application/json"}
+        f"{INTAKE}/api/invoices",
+        data=body,
+        headers={"Content-Type": "application/json", **_auth("submitter")},
     )
     with urllib.request.urlopen(req, timeout=10) as resp:
         assert resp.status == 202, f"expected 202, got {resp.status}"
@@ -70,29 +94,41 @@ def _post_invoice(fixture_id: str) -> str:
 def _post_body(body: dict) -> str:
     data = json.dumps(body).encode()
     req = urllib.request.Request(
-        f"{INTAKE}/api/invoices", data=data, headers={"Content-Type": "application/json"}
+        f"{INTAKE}/api/invoices",
+        data=data,
+        headers={"Content-Type": "application/json", **_auth("submitter")},
     )
     with urllib.request.urlopen(req, timeout=10) as resp:
         return json.load(resp)["trackingId"]
 
 
 def _get_status(tracking_id: str) -> dict:
-    with urllib.request.urlopen(f"{INTAKE}/api/invoices/{tracking_id}", timeout=10) as resp:
+    req = urllib.request.Request(
+        f"{INTAKE}/api/invoices/{tracking_id}", headers=_auth("submitter")
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
         return json.load(resp)
 
 
 def _get_budget(department: str) -> str:
-    with urllib.request.urlopen(f"{PAYMENT}/api/budgets/{department}", timeout=10) as resp:
+    req = urllib.request.Request(
+        f"{PAYMENT}/api/budgets/{department}", headers=_auth("approver")
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
         return json.load(resp)["available"]
 
 
 def _get_payment(tracking_id: str) -> dict:
-    with urllib.request.urlopen(f"{PAYMENT}/api/payments/{tracking_id}", timeout=10) as resp:
+    req = urllib.request.Request(
+        f"{PAYMENT}/api/payments/{tracking_id}", headers=_auth("approver")
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
         return json.load(resp)
 
 
-def _get_json(url: str) -> object:
-    with urllib.request.urlopen(url, timeout=10) as resp:
+def _get_json(url: str, role: str = "admin") -> object:
+    req = urllib.request.Request(url, headers=_auth(role))
+    with urllib.request.urlopen(req, timeout=10) as resp:
         return json.load(resp)
 
 
@@ -112,7 +148,7 @@ def _approve(tracking_id: str, action: str = "approve") -> None:
     req = urllib.request.Request(
         f"{APPROVAL}/api/approvals/{tracking_id}/decision",
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **_auth("approver")},
     )
     with urllib.request.urlopen(req, timeout=15) as resp:
         assert resp.status == 200, f"approve failed: {resp.status}"
@@ -261,20 +297,54 @@ def check_gateway() -> tuple[bool, str]:
     fixture = dict(FIXTURES_BY_ID["INV-1017"])  # in-policy hardware, auto-approves
     body = json.dumps(fixture).encode()
     req = urllib.request.Request(
-        f"{GATEWAY}/api/invoices", data=body, headers={"Content-Type": "application/json"}
+        f"{GATEWAY}/api/invoices",
+        data=body,
+        headers={"Content-Type": "application/json", **_auth("submitter")},
     )
     with urllib.request.urlopen(req, timeout=10) as resp:
         tid = json.load(resp)["trackingId"]
-    with urllib.request.urlopen(f"{GATEWAY}/api/invoices/{tid}", timeout=10) as resp:
+    status_req = urllib.request.Request(
+        f"{GATEWAY}/api/invoices/{tid}", headers=_auth("submitter")
+    )
+    with urllib.request.urlopen(status_req, timeout=10) as resp:
         status_ok = resp.status == 200
 
-    summary = _get_json(f"{GATEWAY}/api/reports/summary")
+    summary = _get_json(f"{GATEWAY}/api/reports/summary", role="approver")
     metrics_ok = summary.get("submitted", 0) >= 1
 
     ok = ui_ok and status_ok and metrics_ok
     return ok, (
         f"UI served: {ui_ok}; submit+status proxied: {status_ok}; "
         f"dashboard metrics visible: {metrics_ok} (submitted={summary.get('submitted')})"
+    )
+
+
+def check_auth() -> tuple[bool, str]:
+    """N1: user-facing endpoints reject anonymous callers and enforce roles —
+    no token → 401; a submitter token on the approver queue → 403."""
+    body = json.dumps(FIXTURES_BY_ID["INV-1001"]).encode()
+    anon = urllib.request.Request(
+        f"{GATEWAY}/api/invoices", data=body, headers={"Content-Type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(anon, timeout=10):
+            anon_status = 200
+    except urllib.error.HTTPError as err:
+        anon_status = err.code
+
+    wrong_role = urllib.request.Request(
+        f"{GATEWAY}/api/approvals", headers=_auth("submitter")
+    )
+    try:
+        with urllib.request.urlopen(wrong_role, timeout=10):
+            role_status = 200
+    except urllib.error.HTTPError as err:
+        role_status = err.code
+
+    ok = anon_status == 401 and role_status == 403
+    return ok, (
+        f"anonymous submit -> {anon_status} (want 401); "
+        f"submitter on approver queue -> {role_status} (want 403)"
     )
 
 
@@ -324,6 +394,7 @@ CHECKS = [
     ("Guard: no $0 dodge (ceiling > 0)", guard_no_zero_dodge),
     ("Gateway: single entry point serves UI + API + metrics", check_gateway),
     ("M8: final outcome delivered to the submitter's inbox", check_notification_inbox),
+    ("N1: anonymous rejected (401), wrong role rejected (403)", check_auth),
 ]
 
 
