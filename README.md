@@ -9,6 +9,10 @@ via one correlation id.
 
 Capstone for the **Microservice Architecture** and **AI Engineering** courses.
 
+## Application demo
+
+[▶ Watch the ApprovalFlow application demo](docs/assets/application-demo.mp4)
+
 > 🚧 Work in progress — built in staged pull requests. See the PR history for the
 > requirement-by-requirement trail. Current: **all four worked journeys are green
 > end-to-end** via `tools/verify.py` (9/9): auto-approve→paid, escalate-and-resume
