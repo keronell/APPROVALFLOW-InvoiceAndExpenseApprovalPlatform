@@ -25,6 +25,14 @@ TERMINAL_STATUSES = {
 }
 
 
+class RefNotReadyError(RuntimeError):
+    """A terminal status arrived before the item's ``item.submitted`` ref.
+
+    Raised so the subscription can ask Dapr to REDELIVER: this is pure pub/sub
+    ordering, and the ref will exist on the retry — returning success here would
+    silently drop the submitter's notification."""
+
+
 class Notification(BaseModel):
     tracking_id: str
     invoice_id: str
@@ -98,9 +106,12 @@ class NotificationService:
             return
         ref = await self._store.get_ref(event.tracking_id)
         if ref is None:
-            # status event for an item we never saw submitted — nothing to address.
-            log.warning("notification_for_unknown_item", tracking_id=event.tracking_id)
-            return
+            # Out-of-order delivery: the terminal status beat item.submitted. Ask
+            # for redelivery instead of dropping the notification — every terminal
+            # status is preceded by an item.submitted publish, so the ref will be
+            # present on retry.
+            log.warning("notification_ref_not_ready", tracking_id=event.tracking_id)
+            raise RefNotReadyError(event.tracking_id)
         # Idempotent on redelivery: append() dedupes per (item, terminal
         # status) atomically with the inbox write itself — a failed append is
         # retried by the redelivery; a successful one makes it a no-op.

@@ -10,11 +10,35 @@ from approvalflow_shared.contracts import InvoiceSubmission
 from approvalflow_shared.logging import get_logger
 
 from ..agent import DecisionAgent
-from ..models import ROUTE_TO_STATUS, AutonomyThresholds, DecisionRecord
+from ..agent.assessor import AgentUnavailableError
+from ..models import (
+    ROUTE_TO_STATUS,
+    AgentAssessment,
+    AutonomyThresholds,
+    DecisionRecord,
+    Recommendation,
+)
 from ..policy_engine import evaluate
 from ..router import route
 
 log = get_logger()
+
+
+def _fail_safe_assessment(invoice: InvoiceSubmission) -> AgentAssessment:
+    """The assessment used when the model provider is unavailable.
+
+    Confidence 0.0 is below any `min_confidence`, so the router forces
+    human_review — never auto-approve. This does NOT violate M15 ("never
+    silently default to an *approval*"): we default to the least-autonomy
+    outcome and log loudly, rather than stranding the submitter at `received`
+    when the agent is down."""
+    return AgentAssessment(
+        category=invoice.category,
+        risk="unknown",
+        confidence=0.0,
+        recommendation=Recommendation.ESCALATE,
+        reasoning="Agent unavailable — routed to human review.",
+    )
 
 
 async def decide(
@@ -25,7 +49,14 @@ async def decide(
     agent: DecisionAgent,
 ) -> DecisionRecord:
     evaluation = evaluate(invoice, thresholds)
-    assessment = await agent.assess(invoice)
+    try:
+        assessment = await agent.assess(invoice)
+    except AgentUnavailableError as exc:
+        # Fail SAFE, not stuck: the deterministic policy engine still ran; route
+        # the item to a human instead of crashing the workflow (which would
+        # leave the submitter at `received` forever).
+        log.error("agent_unavailable_fail_safe", tracking_id=tracking_id, error=str(exc))
+        assessment = _fail_safe_assessment(invoice)
     decision = route(evaluation, assessment, thresholds)
 
     record = DecisionRecord(

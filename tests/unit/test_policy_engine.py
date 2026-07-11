@@ -74,6 +74,53 @@ def test_alcohol_only_is_high_severity(fixtures_by_id: dict) -> None:
     assert ev.rejections
 
 
+def test_saas_cap_compared_in_usd_not_original_currency() -> None:
+    """A €199 SaaS subscription converts to ~$215 (>$200) and must NOT slip
+    under the cap on its raw 199 figure."""
+    invoice = InvoiceSubmission(
+        id="INV-EUR-SAAS",
+        submitter="x@northwind.example",
+        department="engineering-2026Q2",
+        vendor="Figma",
+        vendor_known=True,
+        invoice_number="EU-1",
+        currency="EUR",
+        category="saas",
+        line_items=[{"description": "seats", "quantity": 1, "unit_price": "199"}],
+        tax_amount=Decimal("0"),
+        total=Decimal("199"),
+        receipt_present=True,
+        date=dt.date(2026, 5, 12),
+    )
+    ev = evaluate(invoice)
+    assert ev.usd_amount == Decimal("214.92")  # 199 * 1.08
+    assert "SAAS-01" in ev.rule_ids
+    assert ev.category_compliant is False
+
+
+def test_unknown_currency_is_hard_stop() -> None:
+    """A currency with no configured FX rate is unconvertible → human review,
+    never a 1:1 guess that could auto-approve."""
+    invoice = InvoiceSubmission(
+        id="INV-JPY",
+        submitter="x@northwind.example",
+        department="engineering-2026Q2",
+        vendor="Figma",
+        vendor_known=True,
+        invoice_number="JP-1",
+        currency="JPY",
+        category="saas",
+        line_items=[{"description": "seats", "quantity": 1, "unit_price": "100"}],
+        tax_amount=Decimal("0"),
+        total=Decimal("100"),
+        receipt_present=True,
+        date=dt.date(2026, 5, 12),
+    )
+    ev = evaluate(invoice)
+    assert "GLOBAL-FX-UNKNOWN" in ev.rule_ids
+    assert ev.hard_stops
+
+
 def test_fraud_needs_unknown_vendor() -> None:
     """A round-number, no-detail, weekend submission from a KNOWN vendor is not
     flagged as fraud — the pattern requires a new vendor."""

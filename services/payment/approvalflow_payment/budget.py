@@ -47,13 +47,23 @@ class BudgetStore(Protocol):
         """Return (available, etag), seeding the default on first access."""
         ...
 
-    async def try_set_budget(self, department: str, available: Decimal, etag: str | None) -> bool:
-        """Conditional write; False on ETag conflict."""
+    async def commit_budget_and_reservation(
+        self, department: str, available: Decimal, etag: str | None, reservation: Reservation
+    ) -> bool:
+        """Atomically CAS the budget to ``available`` under ``etag`` **and**
+        upsert ``reservation`` as one unit. Returns False on ETag conflict.
+
+        This is what makes reserve/release crash-safe: the budget change and its
+        reservation record commit together, so a crash never leaves a debited
+        budget with no reservation (which a retry would then debit again)."""
         ...
 
     async def get_reservation(self, tracking_id: str) -> Reservation | None: ...
 
-    async def put_reservation(self, reservation: Reservation) -> None: ...
+    async def put_reservation(self, reservation: Reservation) -> None:
+        """Single-key reservation write (used by ``confirm``, which changes no
+        budget)."""
+        ...
 
 
 class BudgetLedger:
@@ -77,15 +87,17 @@ class BudgetLedger:
             available, etag = await self._store.get_budget(department)
             if amount > available:
                 return ReserveResult(ok=False, reason="insufficient budget")
-            if await self._store.try_set_budget(department, available - amount, etag):
-                await self._store.put_reservation(
-                    Reservation(
-                        tracking_id=tracking_id,
-                        department=department,
-                        amount=str(amount),
-                        status=ReservationStatus.RESERVED,
-                    )
-                )
+            reservation = Reservation(
+                tracking_id=tracking_id,
+                department=department,
+                amount=str(amount),
+                status=ReservationStatus.RESERVED,
+            )
+            # Debit + reservation commit atomically: a crash leaves neither, so
+            # the retry reserves exactly once (no double-debit).
+            if await self._store.commit_budget_and_reservation(
+                department, available - amount, etag, reservation
+            ):
                 return ReserveResult(ok=True)
             # ETag conflict — someone else changed the budget; re-read and retry.
         return ReserveResult(ok=False, reason="budget contention")
@@ -96,11 +108,14 @@ class BudgetLedger:
         if reservation is None or reservation.status != ReservationStatus.RESERVED:
             return
         amount = Decimal(reservation.amount)
+        reservation.status = ReservationStatus.RELEASED
         for _ in range(self._retries):
             available, etag = await self._store.get_budget(reservation.department)
-            if await self._store.try_set_budget(reservation.department, available + amount, etag):
-                reservation.status = ReservationStatus.RELEASED
-                await self._store.put_reservation(reservation)
+            # Credit + status flip commit atomically, so a crash never
+            # re-credits on retry (the RELEASED reservation short-circuits above).
+            if await self._store.commit_budget_and_reservation(
+                reservation.department, available + amount, etag, reservation
+            ):
                 return
         raise RuntimeError(f"could not release budget for {tracking_id}")
 
@@ -129,12 +144,17 @@ class InMemoryBudgetStore:
         available, version = self._budgets[department]
         return available, str(version)
 
-    async def try_set_budget(self, department: str, available: Decimal, etag: str | None) -> bool:
+    async def commit_budget_and_reservation(
+        self, department: str, available: Decimal, etag: str | None, reservation: Reservation
+    ) -> bool:
         async with self._lock:
             _, version = self._budgets[department]
             if etag is not None and str(version) != etag:
                 return False  # conflict
+            # Both writes happen under the one lock → atomic, like the Dapr
+            # transaction the production store uses.
             self._budgets[department] = (available, version + 1)
+            self._reservations[reservation.tracking_id] = reservation.model_copy()
             return True
 
     async def get_reservation(self, tracking_id: str) -> Reservation | None:
