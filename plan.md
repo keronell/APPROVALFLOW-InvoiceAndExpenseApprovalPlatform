@@ -101,10 +101,21 @@ and CI is green. PR descriptions map to requirement IDs.
 9. **`feat/ui-dashboard`** — React UI + reporting service + nginx gateway;
    verify 9/9 incl. the gateway check. ✅ done (PR #11)
 10. **`docs/architecture`** — README, ARCHITECTURE.md diagrams, ADR +
-    PRODUCT-DILEMMA stubs. ⏳ in progress (diagrams landed on the
-    `docs/architecture` branch; ADR/PRODUCT-DILEMMA stubs pending)
-11. **Nice-to-haves**, each its own branch, priority order: N1 → N5 → N6 → N4 →
-    N3 → N2 → B1 → B2 → B3. `main` stays demo-ready.
+    PRODUCT-DILEMMA stubs. ✅ done (PRs #12–#15; the ADR decision/consequences
+    and dilemma justification prose stay human-only per D2)
+11. **Hardening rounds** — atomic budget debit + reservation, USD-only category
+    caps (unknown currencies rejected), atomic dedupe/claim writes, approval
+    side effects serialized behind a lease and replayed after a claim,
+    fail-safe to human review when the agent provider is down, internal ports
+    loopback-bound (gateway stays the sole entry). ✅ done (PRs #17–#20)
+12. **Nice-to-haves**, each its own branch. ✅ shipped: **N2** CD — green
+    `main` publishes all eight images to GHCR, `latest` promoted only after
+    every image lands (PR #21); **N1** role JWT auth — submitter/approver/admin
+    guards on every user-facing endpoint, +2 verify checks (PR #22). Follow-ups:
+    lean agent-framework pins (PR #23), UI usability pass — real submission
+    form, audit timeline, approver notes (PR #25). Not attempted: N5 → N6 →
+    N4 → N3 → B1 → B2 → B3 (original priority order). `main` stays demo-ready
+    at **verify 11/11**.
 
 ## Open items (honest gaps)
 
@@ -123,8 +134,9 @@ and CI is green. PR descriptions map to requirement IDs.
 ## Verification (definition of done)
 
 - `docker compose up` → all health checks green, UI at `:8080`.
-- `python tools/verify.py` (stub model) → four journeys + anti-cheese guards
-  PASS with a clear pass/fail and exit code.
+- `python tools/verify.py` (stub model) → **11 checks PASS** with a clear
+  pass/fail and exit code: the four journeys, the anti-cheese guards, the
+  gateway single-entry check, inbox delivery (M8), and auth 401/403 (N1).
 - Same command in CI on every push.
 - Every fixture's `expected.route` reproduced by the engine+router suite (the
   regression floor).

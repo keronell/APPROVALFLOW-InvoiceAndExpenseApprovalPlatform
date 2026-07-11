@@ -30,6 +30,11 @@ plus operating constraints and things worth remembering. `spec.md` = what;
 - **Verify current MAF/Dapr APIs before coding**; fail loudly if an assumed API
   is missing. (Confirmed: MAF **1.10** uses `Agent`/`AgentSession`/`@tool`, not
   the older `ChatAgent`/`AgentThread` names in the spec.)
+- **Lean MAF dependency:** decision depends on `agent-framework-core` +
+  `agent-framework-openai` (`>=1.10,<1.11`) — never the `agent-framework` meta
+  package (its `[all]` extras made unconstrained pip resolves fail). Bump both
+  pins deliberately and regenerate `services/decision/constraints.txt` inside
+  the image, per that file's header.
 
 ## Working-process decisions (owner preferences)
 
@@ -58,19 +63,29 @@ plus operating constraints and things worth remembering. `spec.md` = what;
 - Commit multi-line messages via `git commit -F <file>` (PowerShell has no
   heredoc and mangles inline multi-line `-m`).
 
-## Status snapshot (2026-07-05)
+## Status snapshot (2026-07-11 — delivery)
 
-- Stages 1–7 complete and merged to `main` via PRs #1–#8; `main` is green
-  (85 tests, ruff clean) and demo-ready.
-- `tools/verify.py` passes **5/5** on a cold `docker compose up` with the stub
-  model: J1 auto-approve→paid, J3 duplicate short-circuit, J4 payment failure +
-  compensation (budget restored), ≥2 no-human auto-approvals, "approve me"
-  note does not flip.
-- Services live: intake (8001), decision (8002), config (8003), payment (8004),
-  each with its own daprd sidecar; RabbitMQ + Redis + placement + scheduler +
-  ollama in compose.
-- Next: **Stage 8 — HITL approval + durable pause/resume (J2, M11)**, then
-  Stage 9 (UI + reporting + nginx gateway), Stage 10 (docs), then nice-to-haves.
+- All stages plus the hardening rounds and N1/N2 are merged to `main` via
+  PRs #1–#25; `main` is green (155 tests, ruff clean) and demo-ready.
+- `tools/verify.py` passes **11/11** on a cold `docker compose up` with the
+  stub model: J1 auto-approve→paid; J2 escalate → decision-service restart →
+  approve → paid (durable HITL); J3 duplicate short-circuit; J4 payment
+  failure + compensation (budget restored); ≥2 no-human auto-approvals;
+  "approve me" note does not flip; INV-1014A/B concurrent approvals never
+  overspend; no-$0 dodge; gateway serves UI + API + metrics; final outcome
+  reaches the submitter's inbox (M8); anonymous 401 / wrong-role 403 (N1).
+- Services live: intake (8001), decision (8002), config (8003), payment
+  (8004), approval (8005), reporting (8006), notification (8007), each with
+  its own daprd sidecar — all loopback-bound; the nginx gateway (8080) is the
+  only public entry. RabbitMQ + Redis + placement + scheduler + ollama in
+  compose.
+- CD (N2): a green `main` publishes all eight images to GHCR
+  (`ghcr.io/<owner>/approvalflow-<service>`) tagged with the commit SHA;
+  `latest` is promoted only after every image lands.
+- Remaining for the owner before the 2026-07-12 freeze: write the ADR
+  Decision/Consequences and the PRODUCT-DILEMMA Posture/Trade-off prose (D2),
+  personalize `docs/EXPLAINERS.md`, and confirm the demo recording (D7).
+  `main` freezes at the deadline.
 
 ## Source-of-truth files (do not contradict)
 
