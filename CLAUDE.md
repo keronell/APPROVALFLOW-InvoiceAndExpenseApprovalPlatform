@@ -26,7 +26,10 @@ tests green: `tests/unit/test_router.py`, `tests/unit/test_fixtures_expected_rou
 ## Tech stack
 
 - Python 3.12 · FastAPI · Pydantic v2
-- Microsoft Agent Framework (`agent-framework`, **1.10**) — `Agent`,
+- Microsoft Agent Framework (`agent-framework-core` + `agent-framework-openai`,
+  **>=1.10,<1.11** — never the `agent-framework` meta package, whose `[all]`
+  extras break pip resolution; pins + regeneration recipe in
+  `services/decision/constraints.txt`) — `Agent`,
   `AgentSession`, `@tool`, structured output via
   `ChatOptions(response_format=...)`. NOTE: the class names are the 2026 API
   (`Agent` not `ChatAgent`, `AgentSession` not `AgentThread`). Verify the
@@ -67,6 +70,12 @@ Services **own their state** — no service reads another's store.
   default. See `DecisionAgent.assess`.
 - **Prompt-injection defense:** the router never reads free text; the agent
   treats invoice notes as data, never instructions.
+- **Auth (N1):** user-facing routes take `require_role(...)` from
+  `approvalflow_shared.auth` (self-signed HS256 role JWTs — submitter /
+  approver / admin, admin passes every gate; secret `AUTH_SECRET`; dev issuer
+  `POST /api/auth/token` served by intake). Dapr-internal surfaces
+  (`/dapr/subscribe`, `/events/*`, service invocation, `/healthz`) stay
+  token-free by design — so they must never be proxied by the gateway.
 
 ## Commands
 
@@ -83,7 +92,9 @@ python tools/verify.py  # four journeys + anti-cheese guards (D5) — added in S
 ```
 
 When adding a service, add `-e services/<name>` to `requirements-dev.txt` so CI
-installs it.
+installs it, and add the image to the publish matrix in
+`.github/workflows/ci.yml` — a green `main` publishes every service image to
+GHCR (N2), with `latest` promoted only after the whole matrix succeeds.
 
 ## Testing rules
 
