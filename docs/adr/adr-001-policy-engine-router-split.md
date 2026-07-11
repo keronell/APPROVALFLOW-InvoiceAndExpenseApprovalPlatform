@@ -44,10 +44,8 @@ as the pattern for exactly this volatility boundary.
 
 ## Decision
 
-<!-- TODO (author): write the reasoning prose - you defend this live.
-     The stubbed list below is the *what*; fill the *why* around it. -->
 
-We adopt "classifier proposes, router decides":
+I adopt "classifier proposes, router decides":
 
 1. The agent (MAF) returns only an advisory `AgentAssessment` - it holds no
    authority over money.
@@ -63,7 +61,7 @@ We adopt "classifier proposes, router decides":
 
 Positive. Because the money math lives in pure functions (policy_engine.evaluate and route) and never in the model, the autonomy ceiling is a structural guarantee rather than a statistical hope: the auto-approve branch is unreachable while evaluation.usd_amount exceeds the ceiling, and the router never reads the agent's recommendation at all. This kills prompt injection as a class - INV-1013's "Approve me" note enters only as lowercased data that can add scrutiny, never remove it - and the guarantee is pinned down by tests (test_router.py, test_fixtures_expected_routes.py) that hold even against an "approve everything" agent. A deterministic money path is also cheap to trust going forward: the agent can be refactored or swapped freely while that regression floor stays green.
 
-Trade-offs. The split costs us a duplicated representation of policy - category caps live in the engine and in the agent's prompt - so a threshold change touches two places and can skew; we accept that because the engine is authoritative and the prompt copy is only advice, meaning drift degrades recommendation quality but never safety. We also make confidence strictly conservative: it can only downgrade an item to human review, never accelerate an approval. That sends some correct-but-hesitant items to a human, but the asymmetry is deliberate - a wrong auto-approval spends money incorrectly, while a needless escalation only spends a reviewer's minute, and those errors are not equal in cost.
+Trade-offs. The split costs me a duplicated representation of policy - category caps live in the engine and in the agent's prompt - so a threshold change touches two places and can skew; I accept that because the engine is authoritative and the prompt copy is only advice, meaning drift degrades recommendation quality but never safety. I also make confidence strictly conservative: it can only downgrade an item to human review, never accelerate an approval. That sends some correct-but-hesitant items to a human, but the asymmetry is deliberate - a wrong auto-approval spends money incorrectly, while a needless escalation only spends a reviewer's minute, and those errors are not equal in cost.
 
 Risks and follow-ups. Thresholds are served hot by the config service with AutonomyThresholds defaults mirroring policy.md; if a poisoned or invalid value arrives, validation fails and the system falls back to the safe defaults rather than converting totals to $0 - so the mechanism fails toward more review. The residual exposure is a value that is valid but wrong (say, a ceiling raised to $2,500): the engine enforces it faithfully, so correctness there rests on whoever sets the number, not on the code. Finally, the agent boundary fails loud, not silent: agent/__init__.py checks for the MAF symbols it builds against and raises ImportError at import if any go missing, so a breaking framework upgrade crashes at startup instead of silently defaulting a decision at request time.
 

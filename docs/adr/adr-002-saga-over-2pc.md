@@ -46,32 +46,32 @@ What the code does today (`services/payment/approvalflow_payment/`):
 
 ## Decision
 
-We implement the payment flow as an **orchestrated saga with compensation**, not
+I implement the payment flow as an orchestrated saga with compensation, not
 a two-phase commit:
 
 1. A Dapr Workflow (`payment_workflow`) orchestrates the steps as ordered
    activities: `reserve_activity` → `pay_activity` → `confirm_activity` →
    `complete_activity`.
-2. Failure is handled by **compensation, not rollback**: a `PaymentDeclined`
+2. Failure is handled by compensation, not rollback: a `PaymentDeclined`
    from `pay_activity` triggers `release_activity` (restores budget, marks the
    reservation `RELEASED`) then `fail_activity` (publishes `payment.failed` +
    status `payment_failed`). A reserve refusal needs no compensation - nothing
    was reserved.
-3. **Concurrency safety** rests on ETag first-write wins
+3. Concurrency safety rests on ETag first-write wins
    (`DaprIO.try_save_state`, retried on 409/412) on the budget key, so two
    approvals racing the same budget can never overspend it.
-4. **Idempotency** is structural: the workflow instance id *is* the tracking id
+4. Idempotency is structural: the workflow instance id *is* the tracking id
    (a redelivered `payment.requested` schedules nothing), and every activity
    short-circuits on an existing reservation/payment record.
 
-We do not use two-phase commit because there is no resource manager to enrol:
+I do not use two-phase commit because there is no resource manager to enrol:
 the money path spans RabbitMQ, Redis, and two independently-stored services with
 no shared transaction coordinator, so 2PC has nothing to coordinate and its
 blocking prepare phase would couple availability across all of them.
 
 ## Consequences
 
-Positive. The saga gives us the M9/M10 guarantees without a distributed
+Positive. The saga gives me the M9/M10 guarantees without a distributed
 transaction coordinator: compensation restores the budget on failure (verified
 by tools/verify.py Journey 4 - INV-1012's budget is identical before and
 after a forced payment failure, so no reservation leaks), ETag first-write wins
@@ -82,9 +82,9 @@ uses.
 
 Trade-offs. Consistency is eventual, not atomic: between reserve and
 pay there is a real window where budget is held but no payment exists, and an
-observer can see that intermediate state - we accept it because compensation
+observer can see that intermediate state - I accept it because compensation
 closes the window and the alternative (2PC) would trade that visibility for
-blocking locks across services. We also pay in complexity: every activity must
+blocking locks across services. I also pay in complexity: every activity must
 be written to be individually idempotent and every forward step must have a
 matching compensating step, which is more code and more test surface than a
 single transaction would need.
