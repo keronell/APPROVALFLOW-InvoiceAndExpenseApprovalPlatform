@@ -1,11 +1,17 @@
 """Approval service: escalation queue + one-action decision (F4/F5/M10)."""
 
 import asyncio
+import datetime as dt
 
 import httpx
 import pytest
 from approvalflow_approval.app import build_app
-from approvalflow_approval.store import InMemoryQueueStore, QueueItem, QueueItemStatus
+from approvalflow_approval.store import (
+    SIDE_EFFECT_LEASE_TTL,
+    InMemoryQueueStore,
+    QueueItem,
+    QueueItemStatus,
+)
 from approvalflow_shared.contracts import EscalationRequested, HumanDecision
 from fastapi.testclient import TestClient
 
@@ -185,6 +191,31 @@ async def test_concurrent_posts_raise_workflow_once():
     assert [tid for tid, _ in gateway.raised] == ["t-1"]
     assert len(gateway.resolved_events) == 1
     assert (await store.get("t-1")).side_effects_completed is True
+
+
+@pytest.mark.anyio
+async def test_stale_side_effects_lease_is_recovered():
+    """A lease held by a crashed request must be taken over once it goes stale,
+    while a fresh lease still blocks — otherwise a crashed holder would strand
+    the side effects forever."""
+    store = InMemoryQueueStore()
+    item = QueueItem(escalation=EscalationRequested.model_validate(escalation()))
+    await store.upsert(item)
+    await store.try_resolve("t-1", HumanDecision(action="approve", approver="a@x"))
+
+    # First holder acquires the lease…
+    assert await store.try_begin_side_effects("t-1") is not None
+    # …a concurrent/immediate second attempt is blocked by the fresh lease.
+    assert await store.try_begin_side_effects("t-1") is None
+
+    # Simulate the holder crashing: age the lease past the TTL.
+    held = await store.get("t-1")
+    stale = dt.datetime.now(dt.UTC) - (SIDE_EFFECT_LEASE_TTL + dt.timedelta(seconds=1))
+    held.side_effects_lease_at = stale
+    await store.upsert(held)
+
+    # Now the stale lease can be taken over for recovery.
+    assert await store.try_begin_side_effects("t-1") is not None
 
 
 @pytest.mark.anyio
