@@ -112,6 +112,48 @@ def test_unknown_item_is_404(client):
     assert resp.status_code == 404
 
 
+class FailOnceGateway(FakeGateway):
+    """Fails the FIRST raise_human_decision, then behaves normally — models a
+    side effect that fails after the queue item has been claimed RESOLVED."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._failed = False
+
+    async def raise_human_decision(self, tracking_id, decision) -> None:
+        if not self._failed:
+            self._failed = True
+            raise RuntimeError("decision service unavailable")
+        await super().raise_human_decision(tracking_id, decision)
+
+
+def test_side_effects_replayed_after_gateway_failure():
+    """High: a claim whose side effects fail must NOT be lost. The retry replays
+    the workflow resume + resolved publish exactly once (no early return that
+    silently drops them)."""
+    gateway = FailOnceGateway()
+    # raise_server_exceptions=False so the failed side effect surfaces as a 500
+    # the client would retry, rather than propagating into the test.
+    client = TestClient(
+        build_app(store=InMemoryQueueStore(), gateway=gateway),
+        raise_server_exceptions=False,
+    )
+    _enqueue(client)
+
+    first = client.post("/api/approvals/t-1/decision", json={"action": "approve"})
+    assert first.status_code == 500  # side effect failed → surfaced for retry
+    assert gateway.raised == []  # nothing resumed yet
+    assert gateway.resolved_events == []
+
+    second = client.post("/api/approvals/t-1/decision", json={"action": "approve"})
+    assert second.status_code == 200
+    assert second.json()["status"] == QueueItemStatus.RESOLVED
+    assert second.json()["side_effects_completed"] is True
+    # Replayed exactly once — not zero (lost), not twice.
+    assert [tid for tid, _ in gateway.raised] == ["t-1"]
+    assert len(gateway.resolved_events) == 1
+
+
 @pytest.mark.anyio
 async def test_concurrent_claims_resolve_exactly_once():
     """M10: two approvers act on the same pending item at once — the atomic

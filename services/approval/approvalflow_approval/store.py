@@ -30,6 +30,11 @@ class QueueItem(BaseModel):
     note: str = ""
     escalated_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.UTC))
     resolved_at: dt.datetime | None = None
+    # Outbox flag: the claim (PENDING→RESOLVED) and the resulting side effects
+    # (resume the workflow, publish escalation.resolved) are NOT one transaction.
+    # This stays False until both side effects have completed, so a claim whose
+    # side effects failed is replayed by a retry instead of being lost.
+    side_effects_completed: bool = False
 
 
 def _resolve(item: QueueItem, decision: HumanDecision) -> None:
@@ -60,6 +65,12 @@ class QueueStore(Protocol):
         conflicting ``escalation.resolved`` events (M10)."""
         ...
 
+    async def mark_side_effects_completed(self, tracking_id: str) -> QueueItem | None:
+        """Flip ``side_effects_completed`` to True once the workflow resume and
+        escalation.resolved publish have both succeeded. Returns the updated
+        item (or None if it vanished). Idempotent."""
+        ...
+
 
 class InMemoryQueueStore:
     def __init__(self) -> None:
@@ -86,6 +97,15 @@ class InMemoryQueueStore:
             self._items[tracking_id] = item
             return item
 
+    async def mark_side_effects_completed(self, tracking_id: str) -> QueueItem | None:
+        async with self._lock:
+            item = self._items.get(tracking_id)
+            if item is None:
+                return None
+            item.side_effects_completed = True
+            self._items[tracking_id] = item
+            return item
+
 
 class DaprQueueStore:
     """Items keyed per tracking id + a small index key for listing."""
@@ -109,6 +129,22 @@ class DaprQueueStore:
             _resolve(item, decision)
             # First-write CAS: only the caller whose ETag still matches wins the
             # PENDING→RESOLVED transition; the loser re-reads and sees RESOLVED.
+            if await self._dapr.try_save_state(
+                STATE_STORE, key, item.model_dump(mode="json"), etag=etag
+            ):
+                return item
+        return None
+
+    async def mark_side_effects_completed(self, tracking_id: str) -> QueueItem | None:
+        key = f"queue::{tracking_id}"
+        for _ in range(self._RETRIES):
+            value, etag = await self._dapr.get_state_and_etag(STATE_STORE, key)
+            if value is None:
+                return None
+            item = QueueItem.model_validate(value)
+            if item.side_effects_completed:
+                return item  # already marked (idempotent)
+            item.side_effects_completed = True
             if await self._dapr.try_save_state(
                 STATE_STORE, key, item.model_dump(mode="json"), etag=etag
             ):
