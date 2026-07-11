@@ -43,10 +43,21 @@ class IntakeService:
         if idempotency_key:
             owner = await self._store.claim_idempotency_key(idempotency_key, tracking_id)
             if owner != tracking_id:
+                # The key belongs to an earlier request — never do new work under
+                # it. If that request's record is already persisted, mirror its
+                # status; if it's still in flight (claimed but not yet stored),
+                # return an accepted pointing at the owner instead of falling
+                # through and publishing a duplicate (the race this closes).
                 existing = await self._store.get(owner)
                 if existing is not None:
                     log.info("intake_idempotent_replay", tracking_id=owner, key=idempotency_key)
                     return self._accepted(existing)
+                log.info("intake_idempotent_inflight", tracking_id=owner, key=idempotency_key)
+                return SubmissionAccepted(
+                    tracking_id=owner,
+                    status=ItemStatus.RECEIVED,
+                    status_url=f"/api/invoices/{owner}",
+                )
 
         # 2) Business duplicate: same vendor + invoiceNumber + total (GLOBAL-DUP).
         #    The first submission owns the fingerprint; later ones short-circuit

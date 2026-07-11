@@ -68,6 +68,27 @@ async def test_idempotency_key_replay_returns_same_tracking_id(service, publishe
 
 
 @pytest.mark.anyio
+async def test_idempotency_key_claimed_but_record_not_yet_persisted(
+    service, store, publisher, fixtures_by_id
+):
+    """Race: the original request has claimed the key but not yet persisted its
+    record. A retry must return the owner's tracking id and do NO new work —
+    never fall through to publish a duplicate."""
+    # Simulate the in-flight original: key owned by 'corr-a', but get('corr-a') None.
+    assert await store.claim_idempotency_key("key-1", "corr-a") == "corr-a"
+
+    second = await service.submit(
+        invoice(fixtures_by_id, "INV-1001"), correlation_id="corr-b", idempotency_key="key-1"
+    )
+
+    assert second.tracking_id == "corr-a"
+    assert second.status == ItemStatus.RECEIVED
+    assert publisher.topics() == []  # nothing published under the retry
+    # No duplicate record was created for the retry's tracking id.
+    assert await service.get_status("corr-b") is None
+
+
+@pytest.mark.anyio
 async def test_status_change_event_updates_record(service, fixtures_by_id):
     await service.submit(invoice(fixtures_by_id, "INV-1001"), correlation_id="corr-1")
     await service.apply_status_change(
