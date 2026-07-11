@@ -106,6 +106,7 @@ function TrackView({ trackingId, setTrackingId }) {
 // ------------------------------------------------------------- Approvals view
 function ApprovalsView() {
   const [queue, setQueue] = useState([]);
+  const [error, setError] = useState("");
 
   const refresh = useCallback(async () => {
     try {
@@ -120,17 +121,24 @@ function ApprovalsView() {
   }, [refresh]);
 
   const act = async (trackingId, action) => {
-    await jsonFetch(`/api/approvals/${trackingId}/decision`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action, approver: "approver@northwind.example" }),
-    });
-    refresh();
+    setError("");
+    try {
+      await jsonFetch(`/api/approvals/${trackingId}/decision`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, approver: "approver@northwind.example" }),
+      });
+      refresh();
+    } catch (e) {
+      // Surface the failure instead of letting the click look like a no-op.
+      setError(`Could not ${action.replace("_", " ")}: ${e.message}`);
+    }
   };
 
   return (
     <section>
       <h2>Approval queue <small>({queue.length} pending)</small></h2>
+      {error && <p className="error">{error}</p>}
       {queue.length === 0 && <p className="note">Nothing waiting for a human. 🎉</p>}
       {queue.map((item) => {
         const esc = item.escalation;

@@ -25,10 +25,27 @@ class DaprBudgetStore:
             value, etag = await self._dapr.get_state_and_etag(STATE_STORE, key)
         return Decimal(str(value["available"])), etag  # type: ignore[index]
 
-    async def try_set_budget(self, department: str, available: Decimal, etag: str | None) -> bool:
-        return await self._dapr.try_save_state(
-            STATE_STORE, f"budget::{department}", {"available": str(available)}, etag=etag
-        )
+    async def commit_budget_and_reservation(
+        self, department: str, available: Decimal, etag: str | None, reservation: Reservation
+    ) -> bool:
+        # One Dapr transaction: the budget CAS (first-write under its etag) and
+        # the reservation upsert commit together, so a crash can never debit the
+        # budget without recording the reservation.
+        budget_req: dict = {"key": f"budget::{department}", "value": {"available": str(available)}}
+        if etag is not None:
+            budget_req["etag"] = etag
+            budget_req["options"] = {"concurrency": "first-write", "consistency": "strong"}
+        operations = [
+            {"operation": "upsert", "request": budget_req},
+            {
+                "operation": "upsert",
+                "request": {
+                    "key": f"reservation::{reservation.tracking_id}",
+                    "value": reservation.model_dump(mode="json"),
+                },
+            },
+        ]
+        return await self._dapr.try_execute_transaction(STATE_STORE, operations)
 
     async def get_reservation(self, tracking_id: str) -> Reservation | None:
         value = await self._dapr.get_state(STATE_STORE, f"reservation::{tracking_id}")

@@ -86,6 +86,26 @@ class DaprIO:
         resp.raise_for_status()
         return True
 
+    async def try_execute_transaction(self, store: str, operations: list[dict]) -> bool:
+        """Commit several state operations atomically (all-or-nothing).
+
+        ``operations`` are Dapr transaction ops, e.g.
+        ``{"operation": "upsert", "request": {"key": ..., "value": ...,
+        "etag": ..., "options": {"concurrency": "first-write",
+        "consistency": "strong"}}}``. Returns ``False`` on an optimistic-
+        concurrency conflict so the caller can re-read and retry — this is what
+        lets a budget debit and its reservation commit as one unit (M9/M10).
+        The Redis state store supports transactions.
+        """
+        resp = await self._client.post(
+            f"{dapr_base_url()}/state/{store}/transaction",
+            json={"operations": operations},
+        )
+        if self._is_conflict(resp):
+            return False
+        resp.raise_for_status()
+        return True
+
     async def try_insert_state(self, store: str, key: str, value: object) -> bool:
         """Atomic insert-if-absent (SETNX semantics): first-write concurrency
         with no ETag succeeds only when the key does not exist yet. Returns

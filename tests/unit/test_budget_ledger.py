@@ -96,17 +96,19 @@ async def test_concurrent_reservations_never_overspend(store):
 
 
 class _FlakyStore(InMemoryBudgetStore):
-    """Fails the first conditional write to simulate an ETag conflict."""
+    """Fails the first atomic commit to simulate an ETag conflict."""
 
     def __init__(self, budgets):
         super().__init__(budgets)
         self._failed_once = False
 
-    async def try_set_budget(self, department, available, etag):
+    async def commit_budget_and_reservation(self, department, available, etag, reservation):
         if not self._failed_once:
             self._failed_once = True
             return False  # simulate a lost race
-        return await super().try_set_budget(department, available, etag)
+        return await super().commit_budget_and_reservation(
+            department, available, etag, reservation
+        )
 
 
 @pytest.mark.anyio
@@ -116,3 +118,39 @@ async def test_reserve_retries_after_etag_conflict():
     assert result.ok  # retried past the conflict
     available, _ = await store.get_budget("marketing-2026Q2")
     assert available == Decimal("400")
+
+
+@pytest.mark.anyio
+async def test_commit_is_atomic_on_conflict(store):
+    """The budget debit and its reservation are one unit: on an ETag conflict
+    NEITHER lands — no debited budget with a missing reservation."""
+    from approvalflow_payment.budget import Reservation
+
+    available, etag = await store.get_budget("marketing-2026Q2")
+    # A concurrent writer bumps the version, making our etag stale.
+    assert await store.commit_budget_and_reservation(
+        "marketing-2026Q2", Decimal("900"), etag,
+        Reservation(tracking_id="winner", department="marketing-2026Q2",
+                    amount="100", status=ReservationStatus.RESERVED),
+    )
+    losing = Reservation(tracking_id="loser", department="marketing-2026Q2",
+                         amount="500", status=ReservationStatus.RESERVED)
+    assert not await store.commit_budget_and_reservation(
+        "marketing-2026Q2", Decimal("400"), etag, losing
+    )
+    after, _ = await store.get_budget("marketing-2026Q2")
+    assert after == Decimal("900")  # only the winner's debit landed
+    assert await store.get_reservation("loser") is None  # no orphaned reservation
+
+
+@pytest.mark.anyio
+async def test_redelivery_never_double_debits():
+    """Redelivery of the same reservation (small amount, ample budget) debits
+    exactly once — the reservation committed atomically with the debit makes the
+    replay a no-op."""
+    store = InMemoryBudgetStore({"marketing-2026Q2": "1000"})
+    ledger = BudgetLedger(store)
+    await ledger.reserve("t1", "marketing-2026Q2", Decimal("300"))
+    await ledger.reserve("t1", "marketing-2026Q2", Decimal("300"))  # redelivery
+    available, _ = await store.get_budget("marketing-2026Q2")
+    assert available == Decimal("700")  # 300 once, not 600

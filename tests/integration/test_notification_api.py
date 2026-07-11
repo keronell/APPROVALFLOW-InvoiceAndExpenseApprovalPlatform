@@ -63,12 +63,30 @@ def test_redelivered_terminal_event_notifies_once(client, fixtures_by_id):
     assert len(inbox) == 1
 
 
-def test_unknown_item_is_dropped(client):
-    _status(client, "never-seen", "paid")
-    # No crash, and no inbox got the orphan event.
+def test_terminal_before_submitted_asks_for_retry(client, fixtures_by_id):
+    """Out-of-order delivery: a terminal status that arrives before its
+    item.submitted must be RETRIED (not dropped), then land after the ref
+    exists."""
+    resp = client.post(
+        "/events/status-changed",
+        json={"data": {"trackingId": "t-ooo", "correlationId": "t-ooo",
+                       "status": "paid", "reason": "done"}},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "RETRY"  # Dapr will redeliver
+    # Nothing delivered yet.
     assert client.get(
         "/api/notifications", params={"submitter": "dana.cohen@northwind.example"}
     ).json() == []
+
+    # item.submitted now arrives; the redelivery lands the notification.
+    _submit(client, fixtures_by_id, tid="t-ooo")
+    _status(client, "t-ooo", "paid")
+    inbox = client.get(
+        "/api/notifications", params={"submitter": "dana.cohen@northwind.example"}
+    ).json()
+    assert len(inbox) == 1
+    assert inbox[0]["status"] == "paid"
 
 
 def test_empty_inbox_for_unknown_submitter(client):

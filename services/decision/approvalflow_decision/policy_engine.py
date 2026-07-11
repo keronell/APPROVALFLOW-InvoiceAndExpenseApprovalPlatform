@@ -23,7 +23,12 @@ def _to_cents(value: Decimal) -> Decimal:
 
 
 def _usd_amount(invoice: InvoiceSubmission, thresholds: AutonomyThresholds) -> Decimal:
-    """Convert the total to USD at the submission-date rate (GLOBAL-FX)."""
+    """Convert the total to USD at the submission-date rate (GLOBAL-FX).
+
+    An unsupported currency has no configured rate. We fall back to 1:1 only so
+    downstream checks have *some* number to print — `evaluate` raises a
+    GLOBAL-FX-UNKNOWN hard stop for that case, which forces human review, so the
+    fallback can never produce an unsafe auto-approval."""
     rate = thresholds.fx_rates.get(invoice.currency.upper(), Decimal("1"))
     return _to_cents(invoice.total * rate)
 
@@ -87,6 +92,21 @@ def evaluate(
                 rule_id="GLOBAL-VENDOR",
                 severity=Severity.HARD_STOP,
                 message=f"New/unknown vendor '{invoice.vendor}' requires human review.",
+            )
+        )
+
+    # --- GLOBAL-FX-UNKNOWN: an unsupported currency has no configured rate, so
+    # its USD value is unknowable. Never guess (a 1:1 guess could auto-approve a
+    # large foreign amount) — force human review.
+    if invoice.currency.upper() not in thresholds.fx_rates:
+        findings.append(
+            PolicyFinding(
+                rule_id="GLOBAL-FX-UNKNOWN",
+                severity=Severity.HARD_STOP,
+                message=(
+                    f"Unsupported currency '{invoice.currency}' has no configured "
+                    f"FX rate; requires human review."
+                ),
             )
         )
 
@@ -168,7 +188,7 @@ def _evaluate_category(
         # MEAL-02: client entertainment over $500 needs a client name + justification.
         # The submission schema carries no structured client-name field, so any
         # client-entertainment spend over the threshold is treated as missing info.
-        if "client" in text and invoice.total > thresholds.client_entertainment_over_usd:
+        if "client" in text and usd > thresholds.client_entertainment_over_usd:
             findings.append(
                 PolicyFinding(
                     rule_id="MEAL-02",
@@ -194,14 +214,14 @@ def _evaluate_category(
         return True
 
     if category == ExpenseCategory.SAAS:
-        # SAAS-01: subscriptions eligible up to $200/month.
-        if invoice.total > thresholds.saas_monthly_cap_usd:
+        # SAAS-01: subscriptions eligible up to $200/month (compared in USD).
+        if usd > thresholds.saas_monthly_cap_usd:
             findings.append(
                 PolicyFinding(
                     rule_id="SAAS-01",
                     severity=Severity.INFO,
                     message=(
-                        f"SaaS ${invoice.total}/mo exceeds the "
+                        f"SaaS ${_to_cents(usd)}/mo exceeds the "
                         f"${thresholds.saas_monthly_cap_usd}/mo cap."
                     ),
                 )
@@ -210,8 +230,8 @@ def _evaluate_category(
         return True
 
     if category == ExpenseCategory.HARDWARE:
-        # HW-02: hardware over $1,000 is a Capital expense → always human.
-        if invoice.total > thresholds.hardware_cap_usd:
+        # HW-02: hardware over $1,000 is a Capital expense → always human (USD).
+        if usd > thresholds.hardware_cap_usd:
             findings.append(
                 PolicyFinding(
                     rule_id="HW-02",
@@ -236,8 +256,8 @@ def _evaluate_category(
                 )
             )
             return False
-        # TRAVEL-02: any single travel expense over $1,500 → manager approval.
-        if invoice.total > thresholds.travel_single_over_usd:
+        # TRAVEL-02: any single travel expense over $1,500 → manager approval (USD).
+        if usd > thresholds.travel_single_over_usd:
             findings.append(
                 PolicyFinding(
                     rule_id="TRAVEL-02",
