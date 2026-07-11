@@ -54,6 +54,13 @@ ruff check .
 pytest
 ```
 
+## CI / CD
+
+CI runs the quality gates (ruff + pytest) and the end-to-end verification on
+every push. On a green `main`, the CD stage automatically builds and publishes
+all service images to GHCR as `ghcr.io/<owner>/approvalflow-<service>`
+(tagged `latest` + commit SHA) — no manual release step (N2).
+
 ## System diagrams
 
 Canonical source: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — the blocks
