@@ -89,17 +89,40 @@ def pay_activity(ctx: wf.WorkflowActivityContext, req: dict) -> str:
 
 async def _pay(req: dict) -> str:
     request = PaymentRequested.model_validate(req)
+    key = f"payment::{request.tracking_id}"
+    # The provider idempotency key: retried calls with the same key yield the
+    # same payment at the provider, never a second charge.
+    idempotency_key = request.tracking_id
     dapr = DaprIO()
     try:
         # Idempotency (M10): if already paid, don't charge again.
-        existing = await dapr.get_state(STATE_STORE, f"payment::{request.tracking_id}")
+        existing = await dapr.get_state(STATE_STORE, key)
         if existing and existing.get("status") == "paid":  # type: ignore[union-attr]
             return str(existing.get("paymentId"))  # type: ignore[union-attr]
-        payment_id = execute_payment(request.invoice, request.usd_amount)  # may raise
+
+        # Record a durable pending attempt BEFORE the external side effect: if
+        # the provider succeeds but we crash before persisting the result, the
+        # retry sees the attempt and re-calls the provider with the SAME
+        # idempotency key — the provider deduplicates, so exactly one charge.
         await dapr.save_state(
             STATE_STORE,
-            f"payment::{request.tracking_id}",
-            {"status": "paid", "paymentId": payment_id, "amount": request.usd_amount},
+            key,
+            {
+                "status": "attempting",
+                "idempotencyKey": idempotency_key,
+                "amount": request.usd_amount,
+            },
+        )
+        payment_id = execute_payment(request.invoice, request.usd_amount, idempotency_key)
+        await dapr.save_state(
+            STATE_STORE,
+            key,
+            {
+                "status": "paid",
+                "paymentId": payment_id,
+                "idempotencyKey": idempotency_key,
+                "amount": request.usd_amount,
+            },
         )
         return payment_id
     finally:

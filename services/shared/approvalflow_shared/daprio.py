@@ -57,18 +57,47 @@ class DaprIO:
         resp.raise_for_status()
         return resp.json(), resp.headers.get("ETag")
 
+    @staticmethod
+    def _is_conflict(resp: httpx.Response) -> bool:
+        """Dapr reports optimistic-concurrency conflicts as 409/412 — except the
+        Redis component (observed on 1.18), which surfaces the first-write/etag
+        Lua-script rejection as a 500 ERR_STATE_SAVE whose message reads
+        "failed to set key ..."."""
+        if resp.status_code in (409, 412):
+            return True
+        if resp.status_code == 500:
+            text = resp.text.lower()
+            return "etag" in text or "failed to set key" in text
+        return False
+
     async def try_save_state(
         self, store: str, key: str, value: object, *, etag: str | None = None
     ) -> bool:
         """Conditional write. With an ETag it uses first-write concurrency and
-        returns False on a conflict (409) so the caller can retry — this is what
+        returns False on a conflict so the caller can retry — this is what
         prevents two concurrent approvals from overspending a budget."""
         entry: dict = {"key": key, "value": value}
         if etag is not None:
             entry["etag"] = etag
             entry["options"] = {"concurrency": "first-write", "consistency": "strong"}
         resp = await self._client.post(f"{dapr_base_url()}/state/{store}", json=[entry])
-        if resp.status_code in (409, 412):  # etag conflict
+        if self._is_conflict(resp):
+            return False
+        resp.raise_for_status()
+        return True
+
+    async def try_insert_state(self, store: str, key: str, value: object) -> bool:
+        """Atomic insert-if-absent (SETNX semantics): first-write concurrency
+        with no ETag succeeds only when the key does not exist yet. Returns
+        False if someone else already owns the key — the race-safe primitive
+        behind duplicate/idempotency claims (M10)."""
+        entry = {
+            "key": key,
+            "value": value,
+            "options": {"concurrency": "first-write", "consistency": "strong"},
+        }
+        resp = await self._client.post(f"{dapr_base_url()}/state/{store}", json=[entry])
+        if self._is_conflict(resp):
             return False
         resp.raise_for_status()
         return True

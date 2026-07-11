@@ -22,6 +22,8 @@ log = get_logger()
 
 
 class DaprInboxStore:
+    _RETRIES = 8
+
     def __init__(self, dapr: DaprIO) -> None:
         self._dapr = dapr
 
@@ -35,10 +37,27 @@ class DaprInboxStore:
         return ItemRef.model_validate(value) if value else None
 
     async def append(self, submitter: str, notification: Notification) -> None:
+        # Conditional append (insert on first write, ETag afterwards) with the
+        # (tracking id, status) dedupe checked against the SAME snapshot the
+        # write commits — no separate pre-claim, so a failed append is simply
+        # retried by the pub/sub redelivery and never lost.
         key = f"inbox::{submitter}"
-        inbox: list = await self._dapr.get_state(STATE_STORE, key) or []  # type: ignore[assignment]
-        inbox.append(notification.model_dump(mode="json"))
-        await self._dapr.save_state(STATE_STORE, key, inbox)
+        for _ in range(self._RETRIES):
+            inbox, etag = await self._dapr.get_state_and_etag(STATE_STORE, key)
+            inbox = list(inbox or [])  # type: ignore[arg-type]
+            if any(
+                n.get("tracking_id") == notification.tracking_id
+                and n.get("status") == notification.status
+                for n in inbox
+            ):
+                return
+            inbox.append(notification.model_dump(mode="json"))
+            if etag is None:
+                if await self._dapr.try_insert_state(STATE_STORE, key, inbox):
+                    return
+            elif await self._dapr.try_save_state(STATE_STORE, key, inbox, etag=etag):
+                return
+        raise RuntimeError(f"could not append notification for {submitter}")
 
     async def inbox(self, submitter: str) -> list[Notification]:
         inbox: list = await self._dapr.get_state(STATE_STORE, f"inbox::{submitter}") or []  # type: ignore[assignment]

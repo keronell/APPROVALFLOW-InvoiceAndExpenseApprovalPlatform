@@ -41,6 +41,17 @@ async def test_release_restores_budget(store):
 
 
 @pytest.mark.anyio
+async def test_non_positive_amounts_are_rejected(store):
+    """A negative reservation would INCREASE the budget — must be refused."""
+    ledger = BudgetLedger(store)
+    for amount in (Decimal("-10"), Decimal("0")):
+        result = await ledger.reserve("t-neg", "marketing-2026Q2", amount)
+        assert not result.ok and "non-positive" in result.reason
+    available, _ = await store.get_budget("marketing-2026Q2")
+    assert available == Decimal("1000")  # untouched
+
+
+@pytest.mark.anyio
 async def test_over_budget_is_rejected(store):
     ledger = BudgetLedger(store)
     assert (await ledger.reserve("t1", "marketing-2026Q2", Decimal("600"))).ok

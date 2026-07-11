@@ -47,7 +47,12 @@ class InboxStore(Protocol):
 
     async def get_ref(self, tracking_id: str) -> ItemRef | None: ...
 
-    async def append(self, submitter: str, notification: Notification) -> None: ...
+    async def append(self, submitter: str, notification: Notification) -> None:
+        """Idempotent per (tracking_id, status): the dedupe must commit in the
+        same atomic write as the inbox entry — never as a separate pre-claim,
+        so a failed append can be retried by the redelivery and a redelivery
+        after a successful append is a no-op (M10)."""
+        ...
 
     async def inbox(self, submitter: str) -> list[Notification]: ...
 
@@ -64,7 +69,13 @@ class InMemoryInboxStore:
         return self._refs.get(tracking_id)
 
     async def append(self, submitter: str, notification: Notification) -> None:
-        self._inboxes.setdefault(submitter, []).append(notification)
+        inbox = self._inboxes.setdefault(submitter, [])
+        if any(
+            n.tracking_id == notification.tracking_id and n.status == notification.status
+            for n in inbox
+        ):
+            return
+        inbox.append(notification)
 
     async def inbox(self, submitter: str) -> list[Notification]:
         return sorted(
@@ -90,10 +101,9 @@ class NotificationService:
             # status event for an item we never saw submitted — nothing to address.
             log.warning("notification_for_unknown_item", tracking_id=event.tracking_id)
             return
-        # Idempotent on redelivery: one notification per (item, terminal status).
-        existing = await self._store.inbox(ref.submitter)
-        if any(n.tracking_id == event.tracking_id and n.status == event.status for n in existing):
-            return
+        # Idempotent on redelivery: append() dedupes per (item, terminal
+        # status) atomically with the inbox write itself — a failed append is
+        # retried by the redelivery; a successful one makes it a no-op.
         await self._store.append(
             ref.submitter,
             Notification(

@@ -1,20 +1,18 @@
 """Dapr-backed implementations of the store and publisher (M5).
 
-Talks to the Dapr sidecar over its HTTP API. Selected at runtime via
-``STORE_BACKEND`` / ``PUBLISHER_BACKEND`` (default ``dapr``); tests use the
-in-memory implementations instead.
+Selected at runtime via ``STORE_BACKEND`` / ``PUBLISHER_BACKEND`` (default
+``dapr``); tests use the in-memory implementations instead.
 
-Note: ``claim_*`` uses a get-then-put and is not strictly atomic under a race.
-Intake dedup is backstopped downstream (the decision workflow and payment are
-keyed by tracking id and fingerprint), and the real no-overspend concurrency
-guarantee is enforced with ETag transactions in the payment service.
+Duplicate/idempotency claims use ``DaprIO.try_insert_state`` — an atomic
+insert-if-absent (first-write concurrency, SETNX semantics). Two concurrent
+submissions with the same fingerprint race on the insert; exactly one wins and
+the loser reads back the winner's tracking id, so the same business invoice can
+never be processed or paid twice (M10/GLOBAL-DUP).
 """
 
 from __future__ import annotations
 
-import os
-
-import httpx
+from approvalflow_shared.daprio import DaprIO
 from approvalflow_shared.logging import get_logger
 from pydantic import BaseModel
 
@@ -23,26 +21,21 @@ from .store import SubmissionRecord
 log = get_logger()
 
 STATE_STORE = "statestore"
-
-
-def _dapr_base_url() -> str:
-    port = os.environ.get("DAPR_HTTP_PORT", "3500")
-    return f"http://localhost:{port}/v1.0"
+_CLAIM_ATTEMPTS = 3
 
 
 class DaprSubmissionStore:
-    def __init__(self, client: httpx.AsyncClient | None = None) -> None:
-        self._client = client or httpx.AsyncClient(timeout=5.0)
+    def __init__(self, dapr: DaprIO | None = None) -> None:
+        self._dapr = dapr or DaprIO()
 
     async def get(self, tracking_id: str) -> SubmissionRecord | None:
-        resp = await self._client.get(f"{_dapr_base_url()}/state/{STATE_STORE}/{tracking_id}")
-        if resp.status_code == 204 or not resp.content:
-            return None
-        resp.raise_for_status()
-        return SubmissionRecord.model_validate(resp.json())
+        value = await self._dapr.get_state(STATE_STORE, tracking_id)
+        return SubmissionRecord.model_validate(value) if value else None
 
     async def put(self, record: SubmissionRecord) -> None:
-        await self._save(record.tracking_id, record.model_dump(mode="json"))
+        await self._dapr.save_state(
+            STATE_STORE, record.tracking_id, record.model_dump(mode="json")
+        )
 
     async def claim_fingerprint(self, fingerprint: str, tracking_id: str) -> str:
         return await self._claim(f"fp::{fingerprint}", tracking_id)
@@ -51,38 +44,22 @@ class DaprSubmissionStore:
         return await self._claim(f"idem::{key}", tracking_id)
 
     async def _claim(self, key: str, tracking_id: str) -> str:
-        existing = await self._get_raw(key)
-        if existing is not None:
-            return existing
-        await self._save(key, tracking_id)
-        return tracking_id
-
-    async def _get_raw(self, key: str) -> str | None:
-        resp = await self._client.get(f"{_dapr_base_url()}/state/{STATE_STORE}/{key}")
-        if resp.status_code == 204 or not resp.content:
-            return None
-        resp.raise_for_status()
-        return resp.json()
-
-    async def _save(self, key: str, value: object) -> None:
-        resp = await self._client.post(
-            f"{_dapr_base_url()}/state/{STATE_STORE}",
-            json=[{"key": key, "value": value}],
-        )
-        resp.raise_for_status()
+        """Atomically claim ``key``; return the owning tracking id."""
+        for _ in range(_CLAIM_ATTEMPTS):
+            if await self._dapr.try_insert_state(STATE_STORE, key, tracking_id):
+                return tracking_id
+            existing = await self._dapr.get_state(STATE_STORE, key)
+            if existing is not None:
+                return str(existing)
+            # Insert conflicted but the key reads empty (owner deleted between
+            # calls?) — retry rather than risk letting a duplicate through.
+        raise RuntimeError(f"could not resolve claim for {key}")
 
 
 class DaprPublisher:
-    def __init__(self, client: httpx.AsyncClient | None = None) -> None:
-        self._client = client or httpx.AsyncClient(timeout=5.0)
+    def __init__(self, dapr: DaprIO | None = None) -> None:
+        self._dapr = dapr or DaprIO()
 
     async def publish(self, topic: str, event: BaseModel, *, correlation_id: str) -> None:
-        from approvalflow_shared.contracts import Topics
-
-        resp = await self._client.post(
-            f"{_dapr_base_url()}/publish/{Topics.PUBSUB_NAME}/{topic}",
-            json=event.model_dump(mode="json", by_alias=True),
-            params={"metadata.cloudevent.id": correlation_id},
-        )
-        resp.raise_for_status()
+        await self._dapr.publish(topic, event, correlation_id=correlation_id)
         log.info("event_published", topic=topic, correlation_id=correlation_id)

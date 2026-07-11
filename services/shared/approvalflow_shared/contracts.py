@@ -79,8 +79,8 @@ class _CamelModel(BaseModel):
 
 class LineItem(_CamelModel):
     description: str
-    quantity: Decimal
-    unit_price: Decimal
+    quantity: Decimal = Field(gt=0)
+    unit_price: Decimal = Field(ge=0)
 
 
 class TestControls(_CamelModel):
@@ -100,10 +100,13 @@ class InvoiceSubmission(_CamelModel):
     invoice_number: str
     currency: str = "USD"
     category: ExpenseCategory
-    attendees: int | None = None
+    attendees: int | None = Field(default=None, ge=1)
     line_items: list[LineItem] = Field(min_length=0)
-    tax_amount: Decimal = Decimal("0")
-    total: Decimal
+    # Money fields are constrained non-negative / positive: a negative total
+    # would otherwise sail under every ceiling/receipt check and a negative
+    # reservation would INCREASE the department budget.
+    tax_amount: Decimal = Field(default=Decimal("0"), ge=0)
+    total: Decimal = Field(gt=0)
     receipt_present: bool = False
     date: dt.date
     notes: str | None = None
