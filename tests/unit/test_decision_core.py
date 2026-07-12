@@ -3,9 +3,10 @@
 import pytest
 from approvalflow_decision.agent.assessor import AgentUnavailableError, DecisionAgent
 from approvalflow_decision.agent.stub_client import StubChatClient
-from approvalflow_decision.models import AutonomyThresholds
+from approvalflow_decision.models import AgentAssessment, AutonomyThresholds
 from approvalflow_decision.service.decision_core import decide
 from approvalflow_shared.contracts import InvoiceSubmission, ItemStatus, Route
+from pydantic import ValidationError
 
 
 def _agent() -> DecisionAgent:
@@ -54,6 +55,24 @@ async def test_agent_outage_fails_safe_to_human_review(fixtures_by_id):
     assert record.route == Route.HUMAN_REVIEW
     assert record.status == ItemStatus.PENDING_APPROVAL
     assert record.assessment.confidence == 0.0
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(90, 0.90), (85.5, 0.855), (100, 1.0), (0.9, 0.9), (1, 1.0), (0, 0.0)],
+)
+def test_percent_scale_confidence_is_normalized(raw, expected):
+    """Small models sometimes answer the 0.0-1.0 confidence contract in percent
+    (e.g. 90); the assessment remaps (1, 100] to a fraction instead of failing
+    the whole structured output into the fail-safe path."""
+    assessment = AgentAssessment(category="meals", confidence=raw)
+    assert assessment.confidence == pytest.approx(expected)
+
+
+def test_out_of_range_confidence_still_fails_loud():
+    for bad in (250, 101, -5):
+        with pytest.raises(ValidationError):
+            AgentAssessment(category="meals", confidence=bad)
 
 
 @pytest.mark.anyio
