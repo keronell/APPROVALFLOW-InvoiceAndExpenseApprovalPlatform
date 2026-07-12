@@ -86,11 +86,19 @@ Auditor
   model/tool calls via the correlation id · **N5** RAG over `policy.md`
   (retrieve only relevant clauses) · **N6** tests across layers (unit/integ/e2e).
 
+> Status at delivery: **N1 and N2 shipped** — role JWTs guard every user-facing
+> endpoint (verify.py asserts the 401/403 behavior), and a green `main`
+> publishes all eight service images to GHCR with `latest` promoted only after
+> every image lands. N3–N6 were not attempted.
+
 ## Bonus
 
 - **B1** eval harness over the labeled dataset producing a committed metrics
   report · **B2** MCP server exposing the agent's tools · **B3** Kubernetes
   manifests.
+
+> Status at delivery: not attempted (candidate follow-ups, alongside the two
+> posture-evolution ideas in `docs/FUTURE-WORK.md`).
 
 ## Dev process
 
