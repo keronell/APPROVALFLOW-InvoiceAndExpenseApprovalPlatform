@@ -1,4 +1,4 @@
-# ApprovalFlow — Specification
+# ApprovalFlow - Specification
 
 Distilled from `Documents/ASSIGNMENT.pdf`, `Examples/policy.md`, and
 `Examples/sample-invoices.json` (the three sources of truth). This file states
@@ -16,7 +16,7 @@ Capstone for Microservice Architecture (MSA) + AI Engineering.
 
 ## The dilemma
 
-How much money — and which expense categories — may the agent approve fully
+How much money - and which expense categories - may the agent approve fully
 autonomously, and which must a human approve? We choose a posture, encode it in
 code, prove the system can never overstep it, and justify the trade-off in
 writing. A `$0` escalate-everything ceiling is explicitly disallowed (it passes
@@ -27,11 +27,11 @@ the safety test but defeats the product).
 - Whole system comes up with **one `docker compose up`** (M4).
 - A **single verification command** runs the four journeys + anti-cheese guards
   and prints pass/fail (D5); built early and kept green.
-- The autonomy ceiling is **provably impossible to exceed** (M12/F10) — the LLM
+- The autonomy ceiling is **provably impossible to exceed** (M12/F10) - the LLM
   never has final say on money.
 - `main` stays runnable and demo-ready. Real `.gitignore`, `LICENSE`,
   `.env.example`, no committed secrets (D3).
-- **Do not author** the ADR prose (D2) or the PRODUCT-DILEMMA justification —
+- **Do not author** the ADR prose (D2) or the PRODUCT-DILEMMA justification -
   stubs only; a human fills the reasoning.
 - Verify current MAF/Dapr API surfaces against their docs before coding; fail
   loudly if an assumed API does not exist.
@@ -69,7 +69,7 @@ Auditor
 - **M8** async intake + notify · **M9** consistent payment with
   compensation/rollback (no orphaned reservations, no partial/double payments) ·
   **M10** idempotency everywhere (duplicate submits, redelivered events, retried
-  payments — exactly one effect) · **M11** durable HITL pause/resume across a
+  payments - exactly one effect) · **M11** durable HITL pause/resume across a
   restart.
 - **M12** provable autonomy ceiling (holds even when the agent is forced to
   approve) · **M13** externally configurable thresholds (no redeploy).
@@ -86,7 +86,7 @@ Auditor
   model/tool calls via the correlation id · **N5** RAG over `policy.md`
   (retrieve only relevant clauses) · **N6** tests across layers (unit/integ/e2e).
 
-> Status at delivery: **N1 and N2 shipped** — role JWTs guard every user-facing
+> Status at delivery: **N1 and N2 shipped** - role JWTs guard every user-facing
 > endpoint (verify.py asserts the 401/403 behavior), and a green `main`
 > publishes all eight service images to GHCR with `latest` promoted only after
 > every image lands. N3–N6 were not attempted.
@@ -109,19 +109,19 @@ Auditor
 
 ## The four worked journeys (seeded from fixtures)
 
-1. **Auto-approve** (in-policy, no human) — `INV-1001`.
+1. **Auto-approve** (in-policy, no human) - `INV-1001`.
 2. **Escalate-and-resume** (durable pause for a human, resume across a service
-   restart) — `INV-1003`.
-3. **Duplicate** (paid once, second submission short-circuited) — `INV-1007`
+   restart) - `INV-1003`.
+3. **Duplicate** (paid once, second submission short-circuited) - `INV-1007`
    (re-submission of `INV-1001`).
 4. **Payment failure + compensation** (saga rolls back; no orphaned reservation,
-   no partial/double payment) — `INV-1012`.
+   no partial/double payment) - `INV-1012`.
 
 ## Anti-cheese guards (the verification must enforce)
 
 - At least **2 items auto-approve with no human**.
 - An `"approve me"` / prompt-injection note does **not** flip the decision.
-- **No `$0` dodge** — a trivial escalate-everything posture fails.
+- **No `$0` dodge** - a trivial escalate-everything posture fails.
 - Ceiling never exceeded even when the agent is forced to recommend approve, and
   no payment/reservation results from such an attempt.
 
@@ -133,7 +133,7 @@ Kept at `policy.md` §6 defaults; the shipped fixtures are labeled against them:
 |---|---|---|
 | `AUTONOMY-CEILING` | **$250** | auto-approve only when USD ≤ $250 (even at confidence 1.0). |
 | `AUTONOMY-CONFIDENCE` | **0.80** | auto-approve only when agent confidence ≥ 0.80. |
-| hard stops | — | new vendor, FX hard stop, math mismatch, fraud signal, missing receipt, missing required info → always human. |
+| hard stops | - | new vendor, FX hard stop, math mismatch, fraud signal, missing receipt, missing required info → always human. |
 
 Auto-approve iff: amount ≤ ceiling AND confidence ≥ threshold AND
 category-compliant AND no hard stop. Otherwise human_review (or reject for a

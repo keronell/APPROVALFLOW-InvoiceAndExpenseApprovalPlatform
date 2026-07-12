@@ -1,4 +1,4 @@
-# ApprovalFlow — Implementation Plan
+# ApprovalFlow - Implementation Plan
 
 *How* we build what `spec.md` describes, using the decisions in `notes.md`.
 This mirrors the approved plan and the staged delivery in progress.
@@ -20,7 +20,7 @@ intake ──item.submitted──▶ decision (Dapr Workflow orchestrator)
 
 | Service | Responsibility | Owned state |
 |---|---|---|
-| **gateway** (nginx) | single entry, rate limit, serve UI, inject `X-Correlation-Id` | — |
+| **gateway** (nginx) | single entry, rate limit, serve UI, inject `X-Correlation-Id` | - |
 | **intake** | 202 + tracking id, fingerprint dedupe (GLOBAL-DUP), publish `item.submitted`, status endpoint with plain-language reason (F1/F2/F3/M8/M10) | submissions + fingerprints (Redis) |
 | **decision** | per-item Dapr Workflow: PolicyEngine → MAF agent → Router → escalate/reject/auto-approve → hand to payment → publish events; enforces the ceiling (M12/F10/F4/F6) | workflow state, decision records |
 | **approval** | escalation queue with recommendation/confidence/cited rules; approve/reject/send-back in one action → raises workflow event; durable pause/resume (F4/F5/M11) | queue items (Redis) |
@@ -40,16 +40,16 @@ sidecar per service, `ollama` (default; `.env` can point at host Ollama).
 minted at the gateway/intake, propagated on HTTP headers and in event payloads,
 stamped on every structured log line.
 
-## The ceiling — classifier proposes, router decides (M12/F10)
+## The ceiling - classifier proposes, router decides (M12/F10)
 
 1. **Deterministic PolicyEngine** (pure Python, no LLM): FX→USD, math
    reconciliation, receipt/vendor hard stops, category caps
    (MEAL/SAAS/HW/TRAVEL), alcohol reject, combined fraud heuristic. Emits typed
    findings + a USD amount.
 2. **MAF Agent** with tools `fetch_policy` + `lookup_vendor`, returns a
-   structured `AgentAssessment` only — advisory, no authority. Notes are data,
+   structured `AgentAssessment` only - advisory, no authority. Notes are data,
    never instructions.
-3. **Router** — pure `route(evaluation, assessment, thresholds)`: auto-approve
+3. **Router** - pure `route(evaluation, assessment, thresholds)`: auto-approve
    only in the final branch where every condition already passed (USD ≤ ceiling
    ∧ confidence ≥ threshold ∧ category-compliant ∧ no hard stop ∧ no rejection).
    The ceiling check reads the engine's USD, never the agent; confidence can
@@ -73,7 +73,7 @@ docs/ARCHITECTURE.md · docs/adr/ (stubs) · docs/PRODUCT-DILEMMA.md (stub)
 docker-compose.yml · .env.example · .gitignore · LICENSE · README.md · CLAUDE.md
 ```
 
-## Staged delivery & git discipline (graded — D3)
+## Staged delivery & git discipline (graded - D3)
 
 One stage = one feature branch = one PR, merged to a green `main`. Small
 conventional commits; tests committed with the code they cover. A stage merges
@@ -82,44 +82,44 @@ and CI is green. PR descriptions map to requirement IDs.
 
 ### Stages and their test gates
 
-1. **`chore/scaffold`** — hygiene, compose infra, shared lib, CI. ✅ done
-2. **`feat/policy-engine-router`** — engine + router; 20-fixture route suite +
+1. **`chore/scaffold`** - hygiene, compose infra, shared lib, CI. ✅ done
+2. **`feat/policy-engine-router`** - engine + router; 20-fixture route suite +
    forced-approve proof. ✅ done
-3. **`feat/intake`** — 202/dedupe/publish/status; unit+integration. ✅ done
-4. **`feat/agent`** — MAF agent, stub client, provider swap, fail-fast;
+3. **`feat/intake`** - 202/dedupe/publish/status; unit+integration. ✅ done
+4. **`feat/agent`** - MAF agent, stub client, provider swap, fail-fast;
    agent→router reproduces fixtures. ✅ done
-5. **`feat/decision-workflow`** — Dapr Workflow + config service; **J1 green in
+5. **`feat/decision-workflow`** - Dapr Workflow + config service; **J1 green in
    verify.py**; CI verify job. ✅ done (PR #6)
-6. **`feat/payment-saga`** — reserve/pay/confirm + compensation, ETag budget
+6. **`feat/payment-saga`** - reserve/pay/confirm + compensation, ETag budget
    concurrency; **J1 ends `paid`, J4 green** (injected failure, budget
    restored), no-overspend unit test. ✅ done (PR #7)
-7. **`feat/duplicate-guard`** — end-to-end duplicate; **J3 green** (verify 5/5).
+7. **`feat/duplicate-guard`** - end-to-end duplicate; **J3 green** (verify 5/5).
    ✅ done (PR #8)
-8. **`feat/hitl-approval`** — queue + `raise_event` + durable resume; **J2 green
+8. **`feat/hitl-approval`** - queue + `raise_event` + durable resume; **J2 green
    incl. restart**; canonical INV-1012 J4 + INV-1014A/B concurrency; full
    verify.py (8/8) in CI. ✅ done (PR #10)
-9. **`feat/ui-dashboard`** — React UI + reporting service + nginx gateway;
+9. **`feat/ui-dashboard`** - React UI + reporting service + nginx gateway;
    verify 9/9 incl. the gateway check. ✅ done (PR #11)
-10. **`docs/architecture`** — README, ARCHITECTURE.md diagrams, ADR +
+10. **`docs/architecture`** - README, ARCHITECTURE.md diagrams, ADR +
     PRODUCT-DILEMMA stubs. ✅ done (PRs #12–#15; the ADR decision/consequences
     and dilemma justification prose stay human-only per D2)
-11. **Hardening rounds** — atomic budget debit + reservation, USD-only category
+11. **Hardening rounds** - atomic budget debit + reservation, USD-only category
     caps (unknown currencies rejected), atomic dedupe/claim writes, approval
     side effects serialized behind a lease and replayed after a claim,
     fail-safe to human review when the agent provider is down, internal ports
     loopback-bound (gateway stays the sole entry). ✅ done (PRs #17–#20)
-12. **Nice-to-haves**, each its own branch. ✅ shipped: **N2** CD — green
+12. **Nice-to-haves**, each its own branch. ✅ shipped: **N2** CD - green
     `main` publishes all eight images to GHCR, `latest` promoted only after
-    every image lands (PR #21); **N1** role JWT auth — submitter/approver/admin
+    every image lands (PR #21); **N1** role JWT auth - submitter/approver/admin
     guards on every user-facing endpoint, +2 verify checks (PR #22). Follow-ups:
-    lean agent-framework pins (PR #23), UI usability pass — real submission
+    lean agent-framework pins (PR #23), UI usability pass - real submission
     form, audit timeline, approver notes (PR #25). Not attempted: N5 → N6 →
     N4 → N3 → B1 → B2 → B3 (original priority order). `main` stays demo-ready
     at **verify 11/11**.
 
 ## Open items (honest gaps)
 
-- ~~**M8 — notification channel is partial.**~~ **Resolved** (branch
+- ~~**M8 - notification channel is partial.**~~ **Resolved** (branch
   `feat/notification-inbox`): a notification service (port 8007) subscribes
   `item.submitted` + `item.status-changed` and files terminal outcomes
   (paid / payment_failed / rejected / sent_back) into a per-submitter inbox at
@@ -128,7 +128,7 @@ and CI is green. PR descriptions map to requirement IDs.
 - ~~**Unused Dapr configuration component.**~~ **Resolved** (branch
   `chore/remove-unused-configstore`): the unused `configuration.redis`
   component was removed. Thresholds live in the state store and are served
-  over service invocation by the config service — runtime-changeable via
+  over service invocation by the config service - runtime-changeable via
   `PUT /config/thresholds` (F7/M13); see ADR-003.
 
 ## Verification (definition of done)
