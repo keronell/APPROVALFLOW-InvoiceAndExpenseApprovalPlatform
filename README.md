@@ -208,7 +208,3 @@ docs/        ARCHITECTURE.md, ADRs, product dilemma
 Examples/    course-shipped fixtures: policy.md, sample-invoices.json
 Documents/   assignment + course material
 ```
-
-## License
-
-[MIT](LICENSE)
