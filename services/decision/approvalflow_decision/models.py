@@ -8,7 +8,7 @@ from enum import IntEnum, StrEnum
 from typing import Annotated
 
 from approvalflow_shared.contracts import ExpenseCategory, ItemStatus, Route
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class Severity(IntEnum):
@@ -106,6 +106,17 @@ class AgentAssessment(BaseModel):
     risk: str = "unknown"
     confidence: float = Field(ge=0.0, le=1.0)
     cited_rules: list[str] = Field(default_factory=list)
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _percent_confidence_to_fraction(cls, v: object) -> object:
+        # Small models sometimes answer the 0.0-1.0 contract in percent
+        # (e.g. 90). Remap (1, 100] to a fraction so a unit slip does not
+        # reject the whole assessment into the fail-safe path; anything else
+        # out of range still fails validation (fail loud, M15).
+        if isinstance(v, int | float) and not isinstance(v, bool) and 1 < v <= 100:
+            return v / 100
+        return v
     policy_violations: list[str] = Field(default_factory=list)
     fraud_signals: list[str] = Field(default_factory=list)
     recommendation: Recommendation = Recommendation.ESCALATE
