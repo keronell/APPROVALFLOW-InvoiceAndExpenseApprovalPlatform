@@ -13,6 +13,8 @@ Capstone for the **Microservice Architecture** and **AI Engineering** courses.
 
 [![ApprovalFlow application demo](docs/assets/application-demo.gif)](docs/assets/application-demo.mp4?raw=1)
 
+[▶ Watch the full demo recording with audio (Google Drive)](https://drive.google.com/file/d/15M5egWcrvz94Md_I2aNZgjyzd7ovGngi/view?usp=sharing)
+
 > Built in staged pull requests - see the PR history for the
 > requirement-by-requirement trail. **All four worked journeys are green
 > end-to-end** via `tools/verify.py` (11/11): auto-approve→paid, escalate-and-resume
