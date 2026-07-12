@@ -1,6 +1,6 @@
 # ADR-002 - Payment saga with compensation vs. two-phase commit
 
-- Status: context drafted - decision/consequences pending (author)
+- Status: accepted (2026-07-12)
 - Date: 2026-07-07
 
 ## Context

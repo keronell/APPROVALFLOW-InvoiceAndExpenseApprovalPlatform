@@ -1,6 +1,6 @@
 # ADR-003 - Dapr as the integration layer vs. hand-rolled equivalents
 
-- Status: context drafted - decision/consequences pending (author)
+- Status: accepted (2026-07-12)
 - Date: 2026-07-07
 
 ## Context
