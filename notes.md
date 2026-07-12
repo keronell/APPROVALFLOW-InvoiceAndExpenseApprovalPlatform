@@ -82,10 +82,10 @@ plus operating constraints and things worth remembering. `spec.md` = what;
 - CD (N2): a green `main` publishes all eight images to GHCR
   (`ghcr.io/<owner>/approvalflow-<service>`) tagged with the commit SHA;
   `latest` is promoted only after every image lands.
-- Remaining for the owner before the 2026-07-12 freeze: write the ADR
-  Decision/Consequences and the PRODUCT-DILEMMA Posture/Trade-off prose (D2),
-  personalize `docs/EXPLAINERS.md`, and confirm the demo recording (D7).
-  `main` freezes at the deadline.
+- Remaining for the owner before the 2026-07-12 freeze: write the
+  PRODUCT-DILEMMA Posture/Trade-off prose (D2). The ADR Decision/Consequences
+  prose is written, the explainer drafts were dropped, and the demo recording
+  ships in `docs/assets/` (D7). `main` freezes at the deadline.
 
 ## Source-of-truth files (do not contradict)
 

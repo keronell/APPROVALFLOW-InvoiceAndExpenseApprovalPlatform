@@ -1,6 +1,6 @@
 # ADR-004 - Config client fails safe to policy.md defaults on outage
 
-- Status: context drafted - decision/consequences pending (author)
+- Status: accepted (2026-07-12)
 - Date: 2026-07-07
 
 ## Context
