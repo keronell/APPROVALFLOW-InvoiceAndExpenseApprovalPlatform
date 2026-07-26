@@ -326,3 +326,6 @@ Two things I'd add to your list that are subtler than anything above:
 | 08 | `08-gateway.md` | pending |
 | 09 | `09-cross-cutting.md` | pending |
 | 10 | `10-likely-questions.md` | pending |
+| 11 | `11-flow-analogies.md` | all route outcomes, walked with analogies + fixtures |
+| 12 | `12-what-if-a-service-is-down.md` | two full flows traced through a mid-request outage |
+| 13 | `13-flow-cheatsheet.md` | compact end-to-end reference: submission → decision → payment/approval → final status |
